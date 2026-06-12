@@ -1,4 +1,5 @@
-﻿using Library.Domain;
+﻿using System.Runtime.CompilerServices;
+using Library.Domain;
 
 namespace LibraryKata.App;
 public class Program
@@ -112,6 +113,41 @@ public class Program
 
         Console.WriteLine($"Check out Dune: {dune.Checkout()}");
         Console.WriteLine($"Checking out the little prince: {littlePrince.Checkout()}");
+    }
+
+    public static void OOpDemo()
+    {
+        Console.WriteLine("\n\n == OOP Demos stuff == ");
+        LibraryIteam[] catalog =
+        {
+          new Book("Dune", "Frank Herbert", 2),
+          new ReferenceBook("C# Language standars", "Microsft", "Techology"),
+          new Magazine("Sports Ilustrated","Conde Naste", 5, "Mag seven")
+        };
+        foreach(LibraryIteam item in catalog)
+        {
+            Console.WriteLine(item.Describe());
+        }
+
+        foreach(LibraryIteam item in catalog)
+        {
+           if (item is ILendable lendable)
+            {
+                Console.WriteLine($"{item.Title}: checkout -> {lendable.Checkout()}");
+            }
+            else
+            {
+                Console.WriteLine($"{item.Title} is Reference only");
+            }
+        }
+
+        Magazine wired = new Magazine("Wired", "Luis", 3 , "Conde Nast");
+        LibraryItem baseMag = wired;
+
+        Console.WriteLine("==Over vs neg on the same object, different ref type");
+        Console.WriteLine($"Magazine reference -> {wired.Describe()}");
+        Console.WriteLine($"Library reference -> {baseMag.Describe}");
+
     }
 
 }
