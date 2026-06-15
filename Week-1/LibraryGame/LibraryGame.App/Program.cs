@@ -42,10 +42,10 @@ public class Program
     {
         return new List<Game>
         {
-            new Game("Zelda", 199m, true),
-            new Game("Metroid", 299m, true),
-            new PhysicalGame("Mario Kart", 249m, true, "Nintendo Switch"),
-            new DigitalGame("Cyberpunk",200m, true, 64)
+            new Game("Zelda", 199, true),
+            new Game("Metroid", 299, true),
+            new PhysicalGame("Mario Kart", 249, true, "Nintendo Switch"),
+            new DigitalGame("Cyberpunk",200, true, 64)
         };
     }
 
