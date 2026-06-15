@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="LibraryGame.App/LibraryGame.App.csproj" />
+  <Project Path="LibraryGame.Domain/LibraryGame.Domain.csproj" />
+</Solution>
