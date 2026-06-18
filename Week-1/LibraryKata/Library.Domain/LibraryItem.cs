@@ -1,4 +1,4 @@
-namespace Library.Domain;
+namespace LibraryKata.Domain;
 
 // Library item will be an abstract class - it cannot be instantiated.
 // it WILL still have a constructor - because child classes NEED to be able 

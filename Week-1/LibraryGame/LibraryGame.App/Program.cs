@@ -42,8 +42,8 @@ public class Program
     {
         return new List<Game>
         {
-            new StandardGame("Zelda", 199, true),
-            new StandardGame("Metroid", 299, true),
+            new Game("Zelda", 199, true),
+            new Game("Metroid", 299, true),
             new PhysicalGame("Mario Kart", 249, true, "Nintendo Switch"),
             new DigitalGame("Cyberpunk",200, true, 64)
         };
@@ -83,7 +83,7 @@ public class Program
         int status = int.Parse(Console.ReadLine() ?? "0");
 
         bool available = status == 1;
-        Game newGame = new StandardGame(name, price, available);
+        Game newGame = new Game(name, price, available);
         games.Add(newGame);
 
         Console.WriteLine($"Game {newGame.Name} was added.");
@@ -97,7 +97,7 @@ public class Program
         Console.Write("New status (1 available / 0 not available): ");
         int status = int.Parse(Console.ReadLine() ?? "0");
 
-        Game? selectedGame = Finder.FindById(games, gameId);
+        Game? selectedGame = FindGameById(games, gameId);
 
         if (selectedGame is null)
         {
@@ -115,5 +115,18 @@ public class Program
         {
             Console.WriteLine("Game status was not updated.");
         }
+    }
+
+    private static Game? FindGameById(List<Game> games, int gameId)
+    {
+        foreach (Game game in games)
+        {
+            if (game.Id == gameId)
+            {
+                return game;
+            }
+        }
+
+        return null;
     }
 }

@@ -1,10 +1,12 @@
-namespace Library.Domain;
+namespace LibraryKata.Domain;
 
 public class ReferenceBook : LibraryItem
 {
-    public string Section { get; }
+    // Our reference book will have a section where it lives
+    public string Section { get;}
 
-    public ReferenceBook(string title, string author, string section) : base(title, author)
+    public ReferenceBook(string title, string author, string section) 
+        : base (title, author)
     {
         Section = section;
     }
@@ -14,8 +16,10 @@ public class ReferenceBook : LibraryItem
         return $"{Id}: {Title} by {Author} -- reference only, {Section} section.";
     }
 
+    // Overriding ShelfLabel() - this is a "true" override
     public override string ShelfLabel()
     {
         return $"REF-{Id} {Title} {Section}";
     }
+
 }

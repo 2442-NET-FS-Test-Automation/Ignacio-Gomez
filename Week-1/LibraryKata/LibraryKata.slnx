@@ -1,6 +1,4 @@
 <Solution>
-  <Folder Name="/LibraryKata.App/">
-    <Project Path="LibraryKata.App/LibraryKata.csproj" />
-  </Folder>
   <Project Path="Library.Domain/Library.Domain.csproj" />
+  <Project Path="LibraryKata.App/LibraryKata.App.csproj" />
 </Solution>

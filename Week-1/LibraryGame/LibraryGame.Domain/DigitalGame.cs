@@ -8,11 +8,11 @@ public class DigitalGame : Game
         Size = size;
     }
 
-    // Polymorphism: digital games answer Describe() with their own version.
+    // Polymorphism: this override replaces the base description for physical games.
     public override void Describe()
     {
         string availabilityText = GetAvailabilityText();
-        Console.WriteLine($"Digital game {Id}: {Name} of size {Size} costs {Price} dollars and is {availabilityText}.");
+        Console.WriteLine($"Digital game {Id}: {Name} of size {Size} GB costs {Price} dollars and is {availabilityText}.");
     }
 
 }

@@ -1,6 +1,6 @@
 ﻿namespace LibraryGame.Domain;
 
-public abstract class Game : ILendable
+public class Game : ILendable
 {
     public static int Counter {get; private set;} = 1;
     public int Id {get; private set;}
@@ -10,7 +10,7 @@ public abstract class Game : ILendable
     public bool Available{get; private set;}
 
 
-    protected Game(string name, decimal price, bool available)
+    public Game(string name, decimal price, bool available)
     {
         Id = Counter++;
         Name = name;
@@ -24,7 +24,7 @@ public abstract class Game : ILendable
         return Available ? "available" : "not available";
     }
 
-    // Base for polymorphism: child classes can override this behavior.
+    // Base version for polymorphism: child classes can override this behavior.
     public virtual void Describe()
     {
         string availabilityText = GetAvailabilityText();
