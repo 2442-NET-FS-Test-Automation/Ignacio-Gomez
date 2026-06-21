@@ -17,7 +17,7 @@ public class Program
     // public - accessible across the program
     // static - Main can be called upon without a Program object. It is a Static/class method. 
     // void - it doesn't return anything
-    public static void Main()
+    public static async Task Main()
     {   
 
         Log.Logger = new LoggerConfiguration()
@@ -39,6 +39,7 @@ public class Program
         CollectionsDemo();
         ExceptionDemo();
         AdvancedClassesDemo();
+        await AsyncHttpDemo();
 
         Log.CloseAndFlush(); 
     }
@@ -404,6 +405,28 @@ public class Program
         {
             Console.WriteLine($"{item.Title}");
         }
+    }
+    
+    public static async Task AsyncHttpDemo()
+    {
+        OpenLibraryClient client = new();
+
+        string[] isbns = { "9780132350884", "9780201633610"};
+
+        Task<LibraryItem?>[] fetchedBooks = new Task<LibraryItem?>[isbns.Length];
+
+        for(int i = 0; i < isbns.Length; i++)
+        {
+            fetchedBooks[i] = client.FetchByIsbnAsync(isbns[i]);
+
+        }
+        LibraryItem?[] foundBooks = await Task.WhenAll(fetchedBooks);
+
+        LibraryItem? firstBookFound = foundBooks.Length > 0 ? foundBooks[0] : null;
+
+        Console.WriteLine($"Fetched: {firstBookFound?.Describe() ?? "nothing"}");
+
+        
     }
 }
 

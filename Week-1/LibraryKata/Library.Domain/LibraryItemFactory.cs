@@ -2,7 +2,7 @@ namespace LibraryKata.Domain;
 
 public static class LibraryItemFactory
 {
-    // we will use that unum
+    // we will use that enum
     public static LibraryItem Create(
         ItemKind kind,
         string title,

@@ -1,6 +1,6 @@
 ﻿namespace LibraryGame.Domain;
 
-public class Game : ILendable
+public abstract class Game : ILendable
 {
     public static int Counter {get; private set;} = 1;
     public int Id {get; private set;}

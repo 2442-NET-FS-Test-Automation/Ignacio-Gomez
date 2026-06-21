@@ -42,10 +42,10 @@ public class Program
     {
         return new List<Game>
         {
-            new Game("Zelda", 199, true),
-            new Game("Metroid", 299, true),
-            new PhysicalGame("Mario Kart", 249, true, "Nintendo Switch"),
-            new DigitalGame("Cyberpunk",200, true, 64)
+            GameFactory.Create(new GameItem(GameKind.StandardGame, "Zelda", 199, true)),
+            GameFactory.Create(new GameItem(GameKind.StandardGame, "Metroid", 299, true)),
+            GameFactory.Create(new GameItem(GameKind.PhysicalGame, "Mario Kart", 249, true, platform: "Nintendo Switch")),
+            GameFactory.Create(new GameItem(GameKind.DigitalGame, "Cyberpunk", 200, true, size: 64))
         };
     }
 
@@ -82,8 +82,34 @@ public class Program
         Console.Write("Available? (1 yes / 0 no): ");
         int status = int.Parse(Console.ReadLine() ?? "0");
 
+        Console.Write("Game type (1 standard / 2 physical / 3 digital): ");
+        string typeChoice = Console.ReadLine() ?? "";
+
         bool available = status == 1;
-        Game newGame = new Game(name, price, available);
+        GameKind kind = typeChoice switch
+        {
+            "1" => GameKind.StandardGame,
+            "2" => GameKind.PhysicalGame,
+            "3" => GameKind.DigitalGame,
+            _ => GameKind.StandardGame
+        };
+
+        string platform = "";
+        int size = 0;
+
+        if (kind == GameKind.PhysicalGame)
+        {
+            Console.Write("Platform: ");
+            platform = Console.ReadLine() ?? "";
+        }
+        else if (kind == GameKind.DigitalGame)
+        {
+            Console.Write("Game size in GB: ");
+            size = int.Parse(Console.ReadLine() ?? "0");
+        }
+
+        GameItem item = new GameItem(kind, name, price, available, platform, size);
+        Game newGame = GameFactory.Create(item);
         games.Add(newGame);
 
         Console.WriteLine($"Game {newGame.Name} was added.");
