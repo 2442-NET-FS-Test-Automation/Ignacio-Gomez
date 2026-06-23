@@ -1,10 +1,11 @@
+using System.Runtime.CompilerServices;
 using LibraryGame.Domain;
 
 namespace LibraryGame.App;
 
 public class Program
 {
-    public static void Main()
+    public static async Task Main()
     {
         List<Game> games = SeedGames();
         bool running = true;

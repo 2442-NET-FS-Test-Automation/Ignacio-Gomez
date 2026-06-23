@@ -1,9 +1,27 @@
 namespace LibraryGame.Domain;
 
-public static class GameItem
+public class GameItem
 {
-    public static Game Create(GameItem)
+    public GameKind Kind { get; }
+    public string Name { get; }
+    public decimal Price { get; }
+    public bool Available { get; }
+    public string Platform { get; }
+    public int Size { get; }
+
+    public GameItem(
+        GameKind kind,
+        string name,
+        decimal price,
+        bool available,
+        string platform = "",
+        int size = 0)
     {
-        return Game;
+        Kind = kind;
+        Name = name;
+        Price = price;
+        Available = available;
+        Platform = platform;
+        Size = size;
     }
 }
