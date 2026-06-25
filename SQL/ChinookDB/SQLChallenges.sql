@@ -19,8 +19,7 @@ GROUP BY - group the data based on one or more columns
 HAVING - a conditional filter of the grouped data
 ORDER BY - sort the data
 */
-
-
+SELECT SUM(Total), BillingCountry FROM Invoice GROUP BY (BillingCountry );
 -- BASIC CHALLENGES
 -- List all customers (full name, customer id, and country) who are not in the USA
 SELECT * FROM Customer;
@@ -107,7 +106,18 @@ INNER JOIN Customer
 INNER JOIN Employee
     ON Customer.SupportRepId = Employee.EmployeeId;
 -- Which sales agent made the most sales in 2021?
-
+SELECT * FROM Employee;
+SELECT 
+    COUNT(Invoice.Total) AS SumTotal,
+    Employee.FirstName AS Sales_FirstName
+FROM Invoice
+INNER JOIN Customer
+    ON Invoice.CustomerId = Customer.CustomerId
+INNER JOIN Employee
+    ON Customer.SupportRepId = Employee.EmployeeId
+WHERE Invoice.InvoiceDate LIKE '%2021%'
+GROUP BY (Employee.FirstName)
+ORDER BY SUMTOTAL;
 -- How many customers are assigned to each sales agent?
 
 
