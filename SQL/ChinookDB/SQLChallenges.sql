@@ -180,13 +180,61 @@ ORDER BY SUMTOTAL;
 
 
 -- DML exercises
+CREATE TABLE MockTable(
+    MockId INT IDENTITY(1,2),
+    TextMock VARCHAR(50) NOT NULL,
+    Flow bit DEFAULT 0 NOT NULL
+);
 
 -- 1. insert two new records into the employee table.
+INSERT INTO Employee ( LastName, FirstName,Title,
+                        ReportsTo,BirthDate,HireDate,Address,
+                        City, State, Country, PostalCode, Phone,
+                        Fax, Email)
+VALUES ('Gomez', 'Ignacio', 'Nanotechnology', 1, '2026-06-29',
+        '2026-06-29', 'Andaman','Guadalajara','Jalisco','Mexico',
+         '45068','3334913334', 'Hola','ignaciogmz99@gmail.com')
 
+INSERT INTO Employee ( LastName, FirstName,Title,
+                        ReportsTo,BirthDate,HireDate,Address,
+                        City, State, Country, PostalCode, Phone,
+                        Fax, Email)
+VALUES ('Gomez', 'Daniel', 'technology', 2, '2027-06-29',
+        '2027-06-29', 'Cruz del sur','Zapopan','Jalisco','Mexico',
+         '45068','3334913334', 'Hola2','ignaciogmz99@gmail.com')
+
+SELECT Title, LastName FROM Employee WHERE Title LIKE '%technology';
 -- 2. insert two new records into the tracks table.
 
 -- 3. update customer Aaron Mitchell's name to Robert Walter
+UPDATE Customer SET FirstName = 'Robert', LastName = 'Walter'
+WHERE  FirstName = 'Aaron' AND LastName = 'Mitchell';
 
+SELECT FirstName, LastName FROM Customer WHERE FirstName = 'Robert';
 -- 4. delete one of the employees you inserted.
-
+DELETE FROM Employee WHERE LastName = 'Gomez' AND FirstName = 'Ignacio';
 -- 5. delete customer Robert Walter.
+DELETE FROM Customer WHERE FirstName = 'Robert' AND LastName = 'Walter';
+SELECT AlbumId, Title, ArtistId FROM Album;
+GO
+
+-- Creating a Procedure 
+CREATE PROCEDURE dbo.UpdateManually3
+    @Title NVARCHAR,
+    @ArtistId INT
+AS
+BEGIN
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        INSERT INTO dbo.Album(Title, ArtistId)
+        VALUES(@Title, @ArtistId);
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW; 
+    END CATCH
+END;
+GO
+
+EXEC dbo.UpdateManually3 'Hola',3 ;
