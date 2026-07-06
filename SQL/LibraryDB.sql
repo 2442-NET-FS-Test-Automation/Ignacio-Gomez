@@ -836,3 +836,15 @@ WHERE ReturnDate is NULL;
 
 -- Trading READ speed for WRITE speed
 CREATE INDEX IX_Loan_MemberId ON dbo.Loan (MemberId);
+
+SELECT column1, aggregate_function(column2), column3, ...
+FROM table_name
+WHERE condition
+GROUP BY column1, column3
+HAVING condition -- The condition on grouped data
+ORDER BY column_name;
+
+SELECT Country, COUNT(CustomerID) AS [Number of Customers]
+FROM Customers
+GROUP BY Country
+HAVING COUNT(CustomerID) > 5;

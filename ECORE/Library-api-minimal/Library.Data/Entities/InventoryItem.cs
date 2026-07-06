@@ -6,5 +6,6 @@ public class InventoryItem
     public int ProductId{get; set;}
     public Product Product {get; set;} = default!; // we can have EF give a default value
     public int CurrentStock {get; set;}
+    public byte[] RowVersion {get; set; } = default!;
 
 }

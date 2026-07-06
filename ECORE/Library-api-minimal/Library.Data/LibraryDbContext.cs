@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Library.Data.Entities;
+using System.Runtime.Serialization;
+using Library.Date.Entities;
 
 namespace Library.Data;
 
@@ -7,11 +9,15 @@ namespace Library.Data;
 // doing CRUD, updating the DB based on changes to my models - All of that lives in class
 public class LibraryDbContext : DbContext
 {
-    public LibraryDbContext(DbContextOptions<LibraryDbContext> options) : base(options){}
+    public LibraryDbContext(DbContextOptions<LibraryDbContext> options) : base(options){ }
     // We need to tell our DbContext what c# classes we are tracking as entities
     // Reminder - these entities become our tables
     public DbSet<Product> Products => Set<Product>();
     public DbSet<InventoryItem> Inventory => Set<InventoryItem>();
+    public DbSet<Customer> Customers => Set<Customer>();
+    public DbSet<Order> Orders => Set<Order>();
+    public DbSet<OrderLines> OrderLines => Set<OrderLines>();
+    public DbSet<FulfillmentEvent> FulfillmentEvents {get; set;}
 
     //If I want to do things like deeper configurations options or data seeding
     //I can override a method we inherited from DbContext
@@ -32,6 +38,14 @@ public class LibraryDbContext : DbContext
 
         });
 
+        b.Entity<InventoryItem>().Property(i => i.RowVersion).IsRowVersion();
+
+        //This order of operations, setting string length and then telling DB that column
+        // Is unique is specific to string + SQL server
+        b.Entity<Customer>().Property(c => c.Email).HasMaxLength(256);
+        b.Entity<Customer>().HasIndex(c => c.Email).IsUnique();
+
+
         // After you've configured your entities
         // We can use OnModelCreating to seed data
         b.Entity<Product>().HasData(
@@ -43,6 +57,11 @@ public class LibraryDbContext : DbContext
             new InventoryItem {Id = 1, ProductId = 1, CurrentStock = 4},
             new InventoryItem {Id = 2, ProductId = 2, CurrentStock = 3},
             new InventoryItem {Id = 3, ProductId = 3, CurrentStock = 8}
+        );
+
+        b.Entity<Customer>().HasData(
+            new Customer { Id = 1, Name = "Ada Lovelace", Email = "ada@example.com"},
+            new Customer { Id = 2, Name = "Alan turing", Email = "alan@example.com"}
         );
     }
 }

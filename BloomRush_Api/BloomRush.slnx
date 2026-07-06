@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="BloomRush.Api/BloomRush.Api.csproj" />
+  <Project Path="BloomRush.Data/BloomRush.Data.csproj" />
+</Solution>
