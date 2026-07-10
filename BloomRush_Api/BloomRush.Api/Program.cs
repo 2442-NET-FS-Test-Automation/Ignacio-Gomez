@@ -3,8 +3,16 @@ using BloomRush.Api.Seeding;
 using BloomRush.Data;
 using BloomRush.Data.Enums;
 using Microsoft.EntityFrameworkCore;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Serilog writes structured events to the console.
+// The burst background task logs one event per processed order.
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .WriteTo.Console()
+    .CreateLogger();
 
 // Program.cs is the HTTP entry point.
 // Swagger/browser/Postman call these endpoints first.
@@ -30,6 +38,7 @@ var app = builder.Build();
 
 app.UseSwagger();
 app.UseSwaggerUI();
+app.Lifetime.ApplicationStopped.Register(() => Log.CloseAndFlush());
 
 app.MapGet("/", () => "BloomRush API ready");
 
@@ -197,6 +206,74 @@ app.MapPost("/orders/seed", (int n, bool expedited, ISeeder seeder) =>
 
     return Results.Ok(new
     {
+        created = orderIds.Count,
+        expedited = expedited,
+        orderIds = orderIds
+    });
+});
+
+// POST /orders/burst?n=20&expedited=false
+// This creates sample orders, starts background fulfillment, then returns immediately.
+// The endpoint does not wait for fulfillment to finish because Task.Run keeps working
+// after the HTTP request is already done.
+app.MapPost("/orders/burst", (
+    int n,
+    bool expedited,
+    ISeeder seeder,
+    IServiceScopeFactory scopes,
+    IHostApplicationLifetime lifetime) =>
+{
+    if (n <= 0)
+    {
+        return Results.BadRequest("n must be greater than zero.");
+    }
+
+    var orderIds = seeder.SeedOrders(n, expedited);
+
+    if (orderIds.Count == 0)
+    {
+        return Results.BadRequest("Run /seed first so customers, products, and inventory exist.");
+    }
+
+    // This token is canceled when the app is shutting down.
+    // It is better than using the HTTP request token because this work should keep running
+    // after Swagger already got its response.
+    var appStopping = lifetime.ApplicationStopping;
+
+    _ = Task.Run(async () =>
+    {
+        try
+        {
+            // The background task is outside the HTTP request.
+            // CreateScope gives it a fresh dependency-injection scope.
+            using var scope = scopes.CreateScope();
+            var fulfillmentService = scope.ServiceProvider.GetRequiredService<IFulfillmentService>();
+
+            // FulfillBurstAsync fans out over the single-order path.
+            // Each order still goes through FulfillOneAsync, including concurrency retry.
+            await fulfillmentService.FulfillBurstAsync(orderIds, appStopping);
+        }
+        catch (OperationCanceledException) when (appStopping.IsCancellationRequested)
+        {
+            // The app is shutting down, so this is expected.
+        }
+        catch (Exception ex)
+        {
+            // Fire-and-forget tasks do not return exceptions to the endpoint,
+            // so we must log errors here.
+            Log.Error(ex, "Burst fulfillment failed");
+        }
+    }, appStopping);
+
+    Log.Information(
+        "Burst accepted {OrderCount} orders. Expedited: {Expedited}. OrderIds: {@OrderIds}",
+        orderIds.Count,
+        expedited,
+        orderIds);
+
+    return Results.Accepted("/orders", new
+    {
+        message = "Burst accepted. Fulfillment is running in a background task.",
         created = orderIds.Count,
         expedited = expedited,
         orderIds = orderIds

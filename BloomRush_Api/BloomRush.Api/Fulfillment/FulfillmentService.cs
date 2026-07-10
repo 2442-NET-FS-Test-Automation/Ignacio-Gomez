@@ -2,6 +2,7 @@ using BloomRush.Data;
 using BloomRush.Data.Entities;
 using BloomRush.Data.Enums;
 using Microsoft.EntityFrameworkCore;
+using Serilog;
 
 namespace BloomRush.Api.Fulfillment;
 
@@ -11,6 +12,9 @@ namespace BloomRush.Api.Fulfillment;
 public interface IFulfillmentService
 {
     Task<FulfillmentResult> FulfillOneAsync(int orderId, CancellationToken ct);
+    Task<IReadOnlyList<BurstFulfillmentItemResult>> FulfillBurstAsync(
+        IReadOnlyList<int> orderIds,
+        CancellationToken ct);
 }
 
 // Fulfillment only has two business outcomes:
@@ -29,6 +33,10 @@ public enum FulfillmentResult
 // update order status, and write a fulfillment event.
 public class FulfillmentService : IFulfillmentService
 {
+    // Bounded retry: if another request changes the same inventory row first,
+    // we reload and try again, but only this many times.
+    private const int MaxConcurrencyAttempts = 3;
+
     private readonly IDbContextFactory<BloomRushDbContext> _factory;
 
     // ASP.NET injects the DbContext factory. We use it to create a fresh DbContext
@@ -42,6 +50,57 @@ public class FulfillmentService : IFulfillmentService
     // Input from Program.cs: orderId.
     // Output back to Program.cs: FulfillmentResult.Fulfilled or FulfillmentResult.Backordered.
     public async Task<FulfillmentResult> FulfillOneAsync(int orderId, CancellationToken ct)
+    {
+        for (var attempt = 1; attempt <= MaxConcurrencyAttempts; attempt++)
+        {
+            try
+            {
+                // Each attempt loads fresh data from SQL Server.
+                // If a previous attempt lost a RowVersion race, this reloads the new stock.
+                return await TryFulfillOneAttemptAsync(orderId, ct);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Another request updated an InventoryItem between our read and SaveChanges.
+                // We do not keep using this DbContext because it has stale RowVersion values.
+                // The next loop attempt creates a new DbContext and re-checks stock.
+                if (attempt == MaxConcurrencyAttempts)
+                {
+                    return await MarkBackorderedAfterConcurrencyAsync(orderId, ct);
+                }
+            }
+        }
+
+        // If every retry lost the concurrency race, stop retrying and backorder.
+        // This keeps the burst from spinning forever.
+        return await MarkBackorderedAfterConcurrencyAsync(orderId, ct);
+    }
+
+    // Called by POST /orders/burst through a background Task.Run.
+    // This method does not contain separate fulfillment rules.
+    // It reuses FulfillOneAsync so single-order and burst behavior stay the same.
+    public async Task<IReadOnlyList<BurstFulfillmentItemResult>> FulfillBurstAsync(
+        IReadOnlyList<int> orderIds,
+        CancellationToken ct)
+    {
+        var tasks = orderIds.Select(async orderId =>
+        {
+            var result = await FulfillOneAsync(orderId, ct);
+
+            // Structured Serilog event:
+            // OrderId and Result are separate properties in the console log.
+            Log.Information(
+                "Burst fulfillment completed for order {OrderId} with result {Result}",
+                orderId,
+                result);
+
+            return new BurstFulfillmentItemResult(orderId, result);
+        });
+
+        return await Task.WhenAll(tasks);
+    }
+
+    private async Task<FulfillmentResult> TryFulfillOneAttemptAsync(int orderId, CancellationToken ct)
     {
         // Each fulfillment run owns its own DbContext.
         // This matters later when burst runs many fulfillments at the same time.
@@ -174,4 +233,51 @@ public class FulfillmentService : IFulfillmentService
 
         return FulfillmentResult.Fulfilled;
     }
+
+    private async Task<FulfillmentResult> MarkBackorderedAfterConcurrencyAsync(
+        int orderId,
+        CancellationToken ct)
+    {
+        // Final fallback after too many RowVersion conflicts.
+        // Use a fresh DbContext so we do not touch stale tracked entities.
+        await using var db = await _factory.CreateDbContextAsync(ct);
+
+        var order = await db.Orders
+            .Where(order => order.Id == orderId)
+            .FirstAsync(ct);
+
+        // If another worker already fulfilled this order while we were retrying,
+        // report Fulfilled and do not overwrite the status.
+        if (order.Status == Status.Fulfilled)
+        {
+            return FulfillmentResult.Fulfilled;
+        }
+
+        // If it is already finished in another non-pending state, treat it as Backordered.
+        if (order.Status != Status.Pending)
+        {
+            return FulfillmentResult.Backordered;
+        }
+
+        var completedAtUtc = DateTime.UtcNow;
+
+        order.Status = Status.Backordered;
+        order.CompletedAtUtc = completedAtUtc;
+
+        db.FulfillmentEvents.Add(new FulfillmentEvent
+        {
+            OrderId = order.Id,
+            Type = FulfillmentEventType.Backordered,
+            Message = "Order backordered after repeated inventory concurrency conflicts.",
+            TimestampUtc = completedAtUtc
+        });
+
+        await db.SaveChangesAsync(ct);
+
+        return FulfillmentResult.Backordered;
+    }
 }
+
+// Small return shape for FulfillBurstAsync.
+// The endpoint does not wait for this, but it is useful for logs/tests/future use.
+public record BurstFulfillmentItemResult(int OrderId, FulfillmentResult Result);
