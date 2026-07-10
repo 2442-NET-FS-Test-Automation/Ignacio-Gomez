@@ -1,33 +1,32 @@
 using BloomRush.Data;
+using BloomRush.Data.Entities;
 using BloomRush.Data.Enums;
 using Microsoft.EntityFrameworkCore;
 
 namespace BloomRush.Api.Fulfillment;
 
-// Contract that Program.cs uses. This lets the endpoint depend on an interface
-// instead of depending directly on the concrete class.
+// Contract that Program.cs uses.
+// Program.cs calls IFulfillmentService from POST /orders/{orderId}/fulfill.
+// The concrete class is FulfillmentService because Program.cs registered it in DI.
 public interface IFulfillmentService
 {
     Task<FulfillmentResult> FulfillOneAsync(int orderId, CancellationToken ct);
 }
 
-// High-level result categories for one fulfillment attempt.
-public enum FulfillmentOutcome
+// Fulfillment only has two business outcomes:
+// either the order is completed, or it cannot be completed because stock is missing.
+public enum FulfillmentResult
 {
+    // The order was completed and inventory was reduced.
     Fulfilled,
-    Backordered,
-    AlreadyTerminal,
-    NotFound,
-    NotReady
+
+    // The order could not be completed because there was not enough stock.
+    Backordered
 }
 
-public record FulfillmentResult(
-    int OrderId,
-    FulfillmentOutcome Outcome,
-    string Message);
-
 // This class will hold the business logic for fulfilling one order.
-// For now it only loads and validates the order; inventory changes come next.
+// This first real version handles one order: check stock, update inventory,
+// update order status, and write a fulfillment event.
 public class FulfillmentService : IFulfillmentService
 {
     private readonly IDbContextFactory<BloomRushDbContext> _factory;
@@ -40,39 +39,139 @@ public class FulfillmentService : IFulfillmentService
     }
 
     // Main entry point for fulfilling one order.
+    // Input from Program.cs: orderId.
+    // Output back to Program.cs: FulfillmentResult.Fulfilled or FulfillmentResult.Backordered.
     public async Task<FulfillmentResult> FulfillOneAsync(int orderId, CancellationToken ct)
     {
         // Each fulfillment run owns its own DbContext.
+        // This matters later when burst runs many fulfillments at the same time.
         await using var db = await _factory.CreateDbContextAsync(ct);
 
         // Load the order and its lines because inventory checks need the requested products.
+        // Example: Order 10 might have lines for roses and tulips.
+        // Program.cs already checked the order exists, so FirstAsync is okay here.
         var order = await db.Orders
             .Include(order => order.Lines)
             .Where(order => order.Id == orderId)
-            .FirstOrDefaultAsync(ct);
+            .FirstAsync(ct);
 
-        // If the order does not exist, the endpoint should return NotFound later.
-        if (order == null)
+        // Safety guards in case another endpoint or future code calls this service directly.
+        // In the normal current flow, Program.cs already stops non-pending orders before this method.
+        // This prevents us from decrementing inventory twice for the same order.
+        if (order.Status == Status.Fulfilled)
         {
-            return new FulfillmentResult(
-                orderId,
-                FulfillmentOutcome.NotFound,
-                $"Order {orderId} was not found.");
+            return FulfillmentResult.Fulfilled;
         }
 
-        // Fulfillment should only run on pending orders.
         if (order.Status != Status.Pending)
         {
-            return new FulfillmentResult(
-                order.Id,
-                FulfillmentOutcome.AlreadyTerminal,
-                $"Order {order.Id} is already {order.Status}.");
+            return FulfillmentResult.Backordered;
         }
 
-        // Temporary stopping point: next step will check inventory and update status/events.
-        return new FulfillmentResult(
-            order.Id,
-            FulfillmentOutcome.NotReady,
-            "Fulfillment service is wired. Inventory decrement comes next.");
+        // These three changes must land together:
+        // inventory decrement + order status + fulfillment event.
+        // If SaveChanges fails, the transaction prevents a half-finished order.
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+
+        // Collect the ProductIds from the order lines so we can load only the inventory rows
+        // needed for this order.
+        // OrderLine has ProductId, not SKU. ProductId is the FK to Products.Id.
+        var productIds = order.Lines
+            .Select(line => line.ProductId)
+            .ToList();
+
+        // InventoryItems contains the stock for each product.
+        // These rows are tracked by EF Core, so changing QuantityOnHand below becomes an UPDATE.
+        var inventoryItems = await db.InventoryItems
+            .Where(item => productIds.Contains(item.ProductId))
+            .ToListAsync(ct);
+
+        // The order can be fulfilled only if every requested line has enough stock.
+        // If even one product is missing or too low, the whole order becomes Backordered.
+        var hasEnoughStock = true;
+
+        foreach (var line in order.Lines)
+        {
+            var inventory = inventoryItems
+                .FirstOrDefault(item => item.ProductId == line.ProductId);
+
+            if (inventory == null || inventory.QuantityOnHand < line.Quantity)
+            {
+                hasEnoughStock = false;
+                break;
+            }
+        }
+
+        // We use one timestamp for the order and the audit event so they match.
+        var completedAtUtc = DateTime.UtcNow;
+
+        // Not enough stock: do not subtract anything. Just mark the order Backordered
+        // and write an event explaining what happened.
+        if (!hasEnoughStock)
+        {
+            // Update the Order entity.
+            // This will become an UPDATE Orders SET Status = Backordered...
+            order.Status = Status.Backordered;
+            order.CompletedAtUtc = completedAtUtc;
+
+            // FulfillmentEvents is the audit trail for the order.
+            // It records "what happened" but does not change the order by itself.
+            db.FulfillmentEvents.Add(new FulfillmentEvent
+            {
+                OrderId = order.Id,
+                Type = FulfillmentEventType.Backordered,
+                Message = "Order backordered because one or more products did not have enough stock.",
+                TimestampUtc = completedAtUtc
+            });
+
+            // SaveChanges sends the UPDATE/INSERT statements to SQL Server.
+            // Sent here:
+            // - UPDATE Orders
+            // - INSERT FulfillmentEvents
+            await db.SaveChangesAsync(ct);
+
+            // Commit makes the transaction final.
+            await transaction.CommitAsync(ct);
+
+            return FulfillmentResult.Backordered;
+        }
+
+        // Enough stock: subtract each requested quantity from its inventory row.
+        foreach (var line in order.Lines)
+        {
+            // Match the order line product to its inventory row.
+            // Example: line.ProductId 5 -> InventoryItems row for TULIP-MIX-20.
+            var inventory = inventoryItems.First(item => item.ProductId == line.ProductId);
+
+            // This is the actual stock decrement.
+            // EF Core remembers the changed QuantityOnHand and saves it on SaveChangesAsync.
+            inventory.QuantityOnHand -= line.Quantity;
+        }
+
+        // The order is now complete.
+        // This will become an UPDATE to the Orders table.
+        order.Status = Status.Fulfilled;
+        order.CompletedAtUtc = completedAtUtc;
+
+        // Audit event: this lets us prove later that this order was fulfilled.
+        db.FulfillmentEvents.Add(new FulfillmentEvent
+        {
+            OrderId = order.Id,
+            Type = FulfillmentEventType.Fulfilled,
+            Message = "Order fulfilled and inventory decremented.",
+            TimestampUtc = completedAtUtc
+        });
+
+        // Save inventory decrement + order status + event together.
+        // Sent here:
+        // - UPDATE InventoryItems
+        // - UPDATE Orders
+        // - INSERT FulfillmentEvents
+        await db.SaveChangesAsync(ct);
+
+        // Finalize the transaction.
+        await transaction.CommitAsync(ct);
+
+        return FulfillmentResult.Fulfilled;
     }
 }
