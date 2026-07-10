@@ -379,4 +379,97 @@ app.MapGet("/reports/top-products", async (
     return Results.Ok(ranked);
 });
 
+// GET /reports/order-status
+// Useful dashboard endpoint: how many orders are Pending, Fulfilled, or Backordered.
+// LINQ part: GroupBy status, Count orders, and Sum total units.
+app.MapGet("/reports/order-status", async (
+    IDbContextFactory<BloomRushDbContext> contextFactory,
+    CancellationToken ct) =>
+{
+    await using var db = await contextFactory.CreateDbContextAsync(ct);
+
+    var report = await db.Orders
+        .AsNoTracking()
+        .GroupBy(order => order.Status)
+        .Select(group => new
+        {
+            status = group.Key.ToString(),
+            orderCount = group.Count(),
+            totalUnits = group
+                .SelectMany(order => order.Lines)
+                .Sum(line => line.Quantity)
+        })
+        .OrderBy(row => row.status)
+        .ToListAsync(ct);
+
+    return Results.Ok(report);
+});
+
+// GET /reports/inventory-value
+// Useful inventory endpoint: current stock and money value per product.
+// LINQ part: Select calculates stockValue, Sum calculates total inventory value.
+app.MapGet("/reports/inventory-value", async (
+    IDbContextFactory<BloomRushDbContext> contextFactory,
+    CancellationToken ct) =>
+{
+    await using var db = await contextFactory.CreateDbContextAsync(ct);
+
+    var items = await db.InventoryItems
+        .AsNoTracking()
+        .Include(item => item.Product)
+        .OrderBy(item => item.Product.Sku)
+        .Select(item => new
+        {
+            item.ProductId,
+            sku = item.Product.Sku,
+            name = item.Product.Name,
+            price = item.Product.Price,
+            item.QuantityOnHand,
+            stockValue = item.QuantityOnHand * item.Product.Price
+        })
+        .ToListAsync(ct);
+
+    return Results.Ok(new
+    {
+        productCount = items.Count,
+        totalUnits = items.Sum(item => item.QuantityOnHand),
+        totalStockValue = items.Sum(item => item.stockValue),
+        items
+    });
+});
+
+// GET /reports/customers
+// Useful customer endpoint: who has the most orders and units.
+// LINQ part: GroupJoin connects Customers to Orders, then Count/Sum aggregate per customer.
+app.MapGet("/reports/customers", async (
+    IDbContextFactory<BloomRushDbContext> contextFactory,
+    CancellationToken ct) =>
+{
+    await using var db = await contextFactory.CreateDbContextAsync(ct);
+
+    var report = await db.Customers
+        .AsNoTracking()
+        .GroupJoin(
+            db.Orders,
+            customer => customer.Id,
+            order => order.CustomerId,
+            (customer, orders) => new
+            {
+                customer.Id,
+                customer.Name,
+                customer.Email,
+                orderCount = orders.Count(),
+                fulfilledOrders = orders.Count(order => order.Status == Status.Fulfilled),
+                backorderedOrders = orders.Count(order => order.Status == Status.Backordered),
+                totalUnits = orders
+                    .SelectMany(order => order.Lines)
+                    .Sum(line => (int?)line.Quantity) ?? 0
+            })
+        .OrderByDescending(row => row.orderCount)
+        .ThenBy(row => row.Name)
+        .ToListAsync(ct);
+
+    return Results.Ok(report);
+});
+
 app.Run();

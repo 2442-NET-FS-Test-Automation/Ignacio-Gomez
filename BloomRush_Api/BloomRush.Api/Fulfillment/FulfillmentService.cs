@@ -78,13 +78,13 @@ public class FulfillmentService : IFulfillmentService
 
     // Called by POST /orders/burst through a background Task.Run.
     // This method does not contain separate fulfillment rules.
-    // It reuses FulfillOneAsync so single-order and burst behavior stay the same.
     public async Task<IReadOnlyList<BurstFulfillmentItemResult>> FulfillBurstAsync(
         IReadOnlyList<int> orderIds,
         CancellationToken ct)
     {
         var tasks = orderIds.Select(async orderId =>
         {
+            //Calling FulfillOneAsync
             var result = await FulfillOneAsync(orderId, ct);
 
             // Structured Serilog event:
@@ -107,8 +107,6 @@ public class FulfillmentService : IFulfillmentService
         await using var db = await _factory.CreateDbContextAsync(ct);
 
         // Load the order and its lines because inventory checks need the requested products.
-        // Example: Order 10 might have lines for roses and tulips.
-        // Program.cs already checked the order exists, so FirstAsync is okay here.
         var order = await db.Orders
             .Include(order => order.Lines)
             .Where(order => order.Id == orderId)
@@ -133,8 +131,6 @@ public class FulfillmentService : IFulfillmentService
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
         // Collect the ProductIds from the order lines so we can load only the inventory rows
-        // needed for this order.
-        // OrderLine has ProductId, not SKU. ProductId is the FK to Products.Id.
         var productIds = order.Lines
             .Select(line => line.ProductId)
             .ToList();
