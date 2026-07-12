@@ -12,6 +12,9 @@ namespace BloomRush.Api.Fulfillment;
 public interface IFulfillmentService
 {
     Task<FulfillmentResult> FulfillOneAsync(int orderId, CancellationToken ct);
+    Task<IReadOnlyList<BurstFulfillmentItemResult>> FulfillManySequentialAsync(
+        IReadOnlyList<int> orderIds,
+        CancellationToken ct);
     Task<IReadOnlyList<BurstFulfillmentItemResult>> FulfillBurstAsync(
         IReadOnlyList<int> orderIds,
         CancellationToken ct);
@@ -74,6 +77,27 @@ public class FulfillmentService : IFulfillmentService
         // If every retry lost the concurrency race, stop retrying and backorder.
         // This keeps the burst from spinning forever.
         return await MarkBackorderedAfterConcurrencyAsync(orderId, ct);
+    }
+
+    public async Task<IReadOnlyList<BurstFulfillmentItemResult>> FulfillManySequentialAsync(
+        IReadOnlyList<int> orderIds,
+        CancellationToken ct)
+    {
+        var results = new List<BurstFulfillmentItemResult>();
+
+        foreach (var orderId in orderIds)
+        {
+            var result = await FulfillOneAsync(orderId, ct);
+
+            Log.Information(
+                "Sequential fulfillment completed for order {OrderId} with result {Result}",
+                orderId,
+                result);
+
+            results.Add(new BurstFulfillmentItemResult(orderId, result));
+        }
+
+        return results;
     }
 
     // Called by POST /orders/burst through a background Task.Run.

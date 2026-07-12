@@ -32,17 +32,22 @@ builder.Services.AddDbContextFactory<BloomRushDbContext>(options =>
 // IFulfillmentService is implemented by FulfillmentService in Fulfillment/FulfillmentService.cs.
 builder.Services.AddScoped<ISeeder, Seeder>();
 builder.Services.AddScoped<IFulfillmentService, FulfillmentService>();
+builder.Services.AddScoped<IFulfillmentConcurrentService, FulfillmentConcurrentService>();
 builder.Services.AddScoped<IOrderDiagnosticsService, OrderDiagnosticsService>();
 builder.Services.AddScoped<IOrderDiagnosticsConcurrentService, OrderDiagnosticsConcurrentService>();
+
 
 // Swagger services let us test the endpoints from the browser.
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddControllers();
 
 var app = builder.Build();
 
 app.UseSwagger();
 app.UseSwaggerUI();
+
+app.MapControllers();
 app.Lifetime.ApplicationStopped.Register(() => Log.CloseAndFlush());
 
 app.MapGet("/", () => "BloomRush API ready");
@@ -320,6 +325,74 @@ app.MapPost("/orders/{orderId:int}/fulfill", async (
     {
         orderId,
         result = result.ToString()
+    });
+});
+
+app.MapPost("/orders/fulfillment-benchmark", async (
+    int n,
+    ISeeder seeder,
+    IFulfillmentService fulfillmentService,
+    IFulfillmentConcurrentService concurrentFulfillment,
+    CancellationToken ct) =>
+{
+    if (n <= 0)
+    {
+        return Results.BadRequest("n must be greater than zero.");
+    }
+
+    seeder.RestoreBaseline();
+    var sequentialOrderIds = seeder.SeedOrders(n);
+
+    if (sequentialOrderIds.Count == 0)
+    {
+        return Results.BadRequest("Run /seed first so customers, products, and inventory exist.");
+    }
+
+    var sequentialTimer = Stopwatch.StartNew();
+    var sequentialResults = await fulfillmentService.FulfillManySequentialAsync(sequentialOrderIds, ct);
+    sequentialTimer.Stop();
+
+    seeder.RestoreBaseline();
+    var concurrentOrderIds = seeder.SeedOrders(n);
+
+    if (concurrentOrderIds.Count == 0)
+    {
+        return Results.BadRequest("Run /seed first so customers, products, and inventory exist.");
+    }
+
+    var concurrentTimer = Stopwatch.StartNew();
+    var concurrentResults = await concurrentFulfillment.FulfillManyConcurrentAsync(concurrentOrderIds, ct);
+    concurrentTimer.Stop();
+
+    var sequentialMs = sequentialTimer.ElapsedMilliseconds;
+    var concurrentMs = concurrentTimer.ElapsedMilliseconds;
+    double? speedup = concurrentMs == 0
+        ? null
+        : Math.Round((double)sequentialMs / concurrentMs, 2);
+
+    return Results.Ok(new
+    {
+        ordersRequested = n,
+        sequentialMs,
+        concurrentMs,
+        speedup,
+        note = "Fair benchmark: baseline is reset before each run. Final database state contains the concurrent run.",
+        sequential = new
+        {
+            created = sequentialOrderIds.Count,
+            fulfilled = sequentialResults.Count(result => result.Result == FulfillmentResult.Fulfilled),
+            backordered = sequentialResults.Count(result => result.Result == FulfillmentResult.Backordered),
+            orderIds = sequentialOrderIds,
+            sample = sequentialResults.Take(5)
+        },
+        concurrent = new
+        {
+            created = concurrentOrderIds.Count,
+            fulfilled = concurrentResults.Count(result => result.Result == FulfillmentResult.Fulfilled),
+            backordered = concurrentResults.Count(result => result.Result == FulfillmentResult.Backordered),
+            orderIds = concurrentOrderIds,
+            sample = concurrentResults.Take(5)
+        }
     });
 });
 
