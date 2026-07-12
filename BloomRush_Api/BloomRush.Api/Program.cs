@@ -1,6 +1,9 @@
+using System.Diagnostics;
+using System.Text.RegularExpressions;
 using BloomRush.Api.Fulfillment;
 using BloomRush.Api.Seeding;
 using BloomRush.Data;
+using BloomRush.Data.Entities;
 using BloomRush.Data.Enums;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
@@ -29,6 +32,8 @@ builder.Services.AddDbContextFactory<BloomRushDbContext>(options =>
 // IFulfillmentService is implemented by FulfillmentService in Fulfillment/FulfillmentService.cs.
 builder.Services.AddScoped<ISeeder, Seeder>();
 builder.Services.AddScoped<IFulfillmentService, FulfillmentService>();
+builder.Services.AddScoped<IOrderDiagnosticsService, OrderDiagnosticsService>();
+builder.Services.AddScoped<IOrderDiagnosticsConcurrentService, OrderDiagnosticsConcurrentService>();
 
 // Swagger services let us test the endpoints from the browser.
 builder.Services.AddEndpointsApiExplorer();
@@ -186,18 +191,18 @@ app.MapGet("/inventory", async (
     return Results.Ok(inventory);
 });
 
-// POST /orders/seed?n=5&expedited=false
-// Program.cs receives the query values n and expedited from the URL.
+// POST /orders/seed?n=5
+// Program.cs receives the query value n from the URL.
 // It calls Seeder.SeedOrders(), which creates Order and OrderLine rows.
 // Seeder returns only the new order IDs, then this endpoint sends those IDs to Swagger.
-app.MapPost("/orders/seed", (int n, bool expedited, ISeeder seeder) =>
+app.MapPost("/orders/seed", (int n, ISeeder seeder) =>
 {
     if (n <= 0)
     {
         return Results.BadRequest("n must be greater than zero.");
     }
 
-    var orderIds = seeder.SeedOrders(n, expedited);
+    var orderIds = seeder.SeedOrders(n);
 
     if (orderIds.Count == 0)
     {
@@ -207,18 +212,16 @@ app.MapPost("/orders/seed", (int n, bool expedited, ISeeder seeder) =>
     return Results.Ok(new
     {
         created = orderIds.Count,
-        expedited = expedited,
         orderIds = orderIds
     });
 });
 
-// POST /orders/burst?n=20&expedited=false
+// POST /orders/burst?n=20
 // This creates sample orders, starts background fulfillment, then returns immediately.
 // The endpoint does not wait for fulfillment to finish because Task.Run keeps working
 // after the HTTP request is already done.
 app.MapPost("/orders/burst", (
     int n,
-    bool expedited,
     ISeeder seeder,
     IServiceScopeFactory scopes,
     IHostApplicationLifetime lifetime) =>
@@ -228,7 +231,7 @@ app.MapPost("/orders/burst", (
         return Results.BadRequest("n must be greater than zero.");
     }
 
-    var orderIds = seeder.SeedOrders(n, expedited);
+    var orderIds = seeder.SeedOrders(n);
 
     if (orderIds.Count == 0)
     {
@@ -253,10 +256,6 @@ app.MapPost("/orders/burst", (
             // Each order still goes through FulfillOneAsync, including concurrency retry.
             await fulfillmentService.FulfillBurstAsync(orderIds, appStopping);
         }
-        catch (OperationCanceledException) when (appStopping.IsCancellationRequested)
-        {
-            // The app is shutting down, so this is expected.
-        }
         catch (Exception ex)
         {
             // Fire-and-forget tasks do not return exceptions to the endpoint,
@@ -266,16 +265,14 @@ app.MapPost("/orders/burst", (
     }, appStopping);
 
     Log.Information(
-        "Burst accepted {OrderCount} orders. Expedited: {Expedited}. OrderIds: {@OrderIds}",
+        "Burst accepted {OrderCount} orders. OrderIds: {@OrderIds}",
         orderIds.Count,
-        expedited,
         orderIds);
 
     return Results.Accepted("/orders", new
     {
         message = "Burst accepted. Fulfillment is running in a background task.",
         created = orderIds.Count,
-        expedited = expedited,
         orderIds = orderIds
     });
 });
@@ -405,38 +402,38 @@ app.MapGet("/reports/order-status", async (
     return Results.Ok(report);
 });
 
-// GET /reports/inventory-value
+/* GET /reports/inventory-value
 // Useful inventory endpoint: current stock and money value per product.
 // LINQ part: Select calculates stockValue, Sum calculates total inventory value.
-app.MapGet("/reports/inventory-value", async (
-    IDbContextFactory<BloomRushDbContext> contextFactory,
-    CancellationToken ct) =>
-{
-    await using var db = await contextFactory.CreateDbContextAsync(ct);
+// app.MapGet("/reports/inventory-value", async (
+//     IDbContextFactory<BloomRushDbContext> contextFactory,
+//     CancellationToken ct) =>
+// {
+//     await using var db = await contextFactory.CreateDbContextAsync(ct);
 
-    var items = await db.InventoryItems
-        .AsNoTracking()
-        .Include(item => item.Product)
-        .OrderBy(item => item.Product.Sku)
-        .Select(item => new
-        {
-            item.ProductId,
-            sku = item.Product.Sku,
-            name = item.Product.Name,
-            price = item.Product.Price,
-            item.QuantityOnHand,
-            stockValue = item.QuantityOnHand * item.Product.Price
-        })
-        .ToListAsync(ct);
+//     var items = await db.InventoryItems
+//         .AsNoTracking()
+//         .Include(item => item.Product)
+//         .OrderBy(item => item.Product.Sku)
+//         .Select(item => new
+//         {
+//             item.ProductId,
+//             sku = item.Product.Sku,
+//             name = item.Product.Name,
+//             price = item.Product.Price,
+//             item.QuantityOnHand,
+//             stockValue = item.QuantityOnHand * item.Product.Price
+//         })
+//         .ToListAsync(ct);
 
-    return Results.Ok(new
-    {
-        productCount = items.Count,
-        totalUnits = items.Sum(item => item.QuantityOnHand),
-        totalStockValue = items.Sum(item => item.stockValue),
-        items
-    });
-});
+//     return Results.Ok(new
+//     {
+//         productCount = items.Count,
+//         totalUnits = items.Sum(item => item.QuantityOnHand),
+//         totalStockValue = items.Sum(item => item.stockValue),
+//         items
+//     });
+// });*/
 
 // GET /reports/customers
 // Useful customer endpoint: who has the most orders and units.
@@ -471,5 +468,238 @@ app.MapGet("/reports/customers", async (
 
     return Results.Ok(report);
 });
+
+
+app.MapGet("/products/{sku}", async (BloomRushDbContext db, string sku) =>
+{
+    var results = await db.Products
+        .AsNoTracking()
+        .Where(products => products.Sku == sku)
+        .Select(products => new
+        {
+            Id = products.Id,
+            Sku = products.Sku,
+            Name = products.Name,
+            Price = products.Price
+        }).FirstOrDefaultAsync();
+    
+    if (results == null)
+    {
+        return Results.NotFound();
+    }
+    return Results.Ok(results);
+});
+
+app.MapGet("/products/price-over/{minPrice}", async (BloomRushDbContext db, decimal minPrice) =>
+{
+    var productOrder = await db.Products
+        .Where(p => p.Price > minPrice)
+        .OrderByDescending(p => p.Price)
+        .Select(p => new
+        {
+           Id = p.Id,
+           Sku = p.Sku,
+           Name = p.Name,
+           Price = p.Price 
+        }).ToListAsync();
+    
+    if(productOrder.Count() == 0)
+    {
+        return Results.NotFound();
+    }
+    return Results.Ok(productOrder);
+});
+
+app.MapGet("/orders/status", async (BloomRushDbContext db) =>
+{
+    var results = await db.Orders
+        .AsNoTracking()
+        .GroupBy(order => order.Status)
+        .Select(group => new
+        {
+            status = group.Key.ToString(),
+            count = group.Count()
+        })
+        .ToListAsync();
+
+    return Results.Ok(results);
+});
+
+app.MapGet("/orders/status/min-count/{minCount}", async (BloomRushDbContext db, int minCount) =>
+{
+    var orders = await db.Orders
+        .GroupBy(p => p.Status)
+        .Where(group => group.Count() > minCount)
+        .Select(group => new
+        {
+           status = group.Key.ToString(),
+           count = group.Count()
+        }).ToListAsync();
+    return Results.Ok(orders);
+});
+
+app.MapGet("/orders/customers/join", async (BloomRushDbContext db) =>
+{
+    var orders = await db.Orders
+        .AsNoTracking()
+        .Join(
+            db.Customers,
+            order => order.CustomerId,
+            customer => customer.Id,
+            (order, customer) => new
+            {
+                orderId = order.Id,
+                customerName = customer.Name,
+                customerEmail = customer.Email,
+                status = order.Status.ToString()
+            })
+        .ToListAsync();
+
+    return Results.Ok(orders);
+});
+
+app.MapGet("/simple/product-by-name", async(BloomRushDbContext db) =>
+{
+    var products = await db.Products
+        .GroupBy(p => p.Name)
+        .Select(group => new
+        {
+           Name = group.Key,
+           Num = group.Count()
+        }).ToListAsync();
+    return Results.Ok(products);
+});
+
+app.MapGet("/factory/product-by-name", async(IDbContextFactory<BloomRushDbContext> factory) =>
+{
+    await using var db = await factory.CreateDbContextAsync();
+    var products = await db.Products
+        .GroupBy(p => p.Name)
+        .Select(group => new
+        {
+           Name = group.Key,
+           Num = group.Count()
+        }).ToListAsync();
+    return Results.Ok(products);
+});
+
+app.MapGet("/orders/{id}/stock-check-normal", async(BloomRushDbContext db, int id, 
+            IOrderDiagnosticsService diagnostics, CancellationToken ct) =>
+{
+    var check = await diagnostics.CheckOneOrderAsync(db, id, ct);
+    if (check == null)
+    {
+        return Results.NotFound($"Order {id} was not found");
+    }
+    return Results.Ok(check);
+});
+
+app.MapPost("/orders/stock-check-normal", async (
+    int n,
+    BloomRushDbContext db,
+    ISeeder seeder,
+    IOrderDiagnosticsService diagnostics,
+    CancellationToken ct) =>
+{
+    if (n <= 0)
+    {
+        return Results.BadRequest("n must be greater than zero.");
+    }
+
+    var orderIds = seeder.SeedOrders(n);
+
+    if (orderIds.Count == 0)
+    {
+        return Results.BadRequest("Run /seed first so customers, products, and inventory exist.");
+    }
+
+    var results = await diagnostics.CheckManyOrdersSequentialAsync(db, orderIds, ct);
+
+    return Results.Ok(new
+    {
+        created = orderIds.Count,
+        checkedOrders = results.Count,
+        orderIds,
+        results
+    });
+});
+
+app.MapPost("/orders/stock-check-concurrent", async (
+    int n,
+    ISeeder seeder,
+    IOrderDiagnosticsConcurrentService diagnostics,
+    CancellationToken ct) =>
+{
+    if (n <= 0)
+    {
+        return Results.BadRequest("n must be greater than zero.");
+    }
+
+    var orderIds = seeder.SeedOrders(n);
+
+    if (orderIds.Count == 0)
+    {
+        return Results.BadRequest("Run /seed first so customers, products, and inventory exist.");
+    }
+
+    var results = await diagnostics.CheckManyOrdersConcurrentAsync(orderIds, ct);
+
+    return Results.Ok(new
+    {
+        created = orderIds.Count,
+        checkedOrders = results.Count,
+        orderIds,
+        results
+    });
+});
+
+app.MapPost("/orders/stock-check-benchmark", async (
+    int n,
+    BloomRushDbContext db,
+    ISeeder seeder,
+    IOrderDiagnosticsService normalDiagnostics,
+    IOrderDiagnosticsConcurrentService concurrentDiagnostics,
+    CancellationToken ct) =>
+{
+    if (n <= 0)
+    {
+        return Results.BadRequest("n must be greater than zero.");
+    }
+
+    var orderIds = seeder.SeedOrders(n);
+
+    if (orderIds.Count == 0)
+    {
+        return Results.BadRequest("Run /seed first so customers, products, and inventory exist.");
+    }
+
+    var sequentialTimer = Stopwatch.StartNew();
+    var sequentialResults = await normalDiagnostics.CheckManyOrdersSequentialAsync(db, orderIds, ct);
+    sequentialTimer.Stop();
+
+    var concurrentTimer = Stopwatch.StartNew();
+    var concurrentResults = await concurrentDiagnostics.CheckManyOrdersConcurrentAsync(orderIds, ct);
+    concurrentTimer.Stop();
+
+    var sequentialMs = sequentialTimer.ElapsedMilliseconds;
+    var concurrentMs = concurrentTimer.ElapsedMilliseconds;
+    double? speedup = concurrentMs == 0
+        ? null
+        : Math.Round((double)sequentialMs / concurrentMs, 2);
+
+    return Results.Ok(new
+    {
+        ordersCreated = orderIds.Count,
+        sequentialMs,
+        concurrentMs,
+        speedup,
+        note = "Training benchmark: sequential uses one DbContext with foreach/await; concurrent uses one DbContext per task with Task.WhenAll.",
+        sequentialChecked = sequentialResults.Count,
+        concurrentChecked = concurrentResults.Count,
+        orderIds,
+        sample = concurrentResults.Take(5)
+    });
+});
+
 
 app.Run();

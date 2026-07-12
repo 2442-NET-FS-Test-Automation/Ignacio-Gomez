@@ -10,7 +10,7 @@ namespace BloomRush.Api.Seeding;
 public interface ISeeder
 {
     SeedResult RestoreBaseline();
-    IReadOnlyList<int> SeedOrders(int n, bool expedited);
+    IReadOnlyList<int> SeedOrders(int n);
 }
 
 // Seeder owns the test-data logic.
@@ -174,9 +174,9 @@ public class Seeder : ISeeder
 
     // Called by POST /orders/seed in Program.cs.
     // n decides how many orders to create.
-    // expedited decides whether the orders use Priority.Expedited or Priority.Standard.
+    // Seeded orders use Standard priority to keep the demo focused on fulfillment.
     // This method returns the IDs of the created orders back to Program.cs.
-    public IReadOnlyList<int> SeedOrders(int n, bool expedited)
+    public IReadOnlyList<int> SeedOrders(int n)
     {
         if (n <= 0)
         {
@@ -219,7 +219,7 @@ public class Seeder : ISeeder
             var order = new Order
             {
                 CustomerId = customerIds[i % customerIds.Count],
-                Priority = expedited ? Priority.Expedited : Priority.Standard,
+                Priority = Priority.Standard,
                 Status = Status.Pending,
                 CreatedAtUtc = DateTime.UtcNow,
                 Lines =
