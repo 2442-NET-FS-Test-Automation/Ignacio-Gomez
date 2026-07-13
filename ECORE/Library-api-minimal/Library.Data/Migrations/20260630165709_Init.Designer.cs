@@ -11,8 +11,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Library.Data.Migrations
 {
     [DbContext(typeof(LibraryDbContext))]
-    [Migration("20260630172747_DataSeeded")]
-    partial class DataSeeded
+    [Migration("20260630165709_Init")]
+    partial class Init
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -44,26 +44,6 @@ namespace Library.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("Inventory");
-
-                    b.HasData(
-                        new
-                        {
-                            Id = 1,
-                            CurrentStock = 4,
-                            ProductId = 1
-                        },
-                        new
-                        {
-                            Id = 2,
-                            CurrentStock = 3,
-                            ProductId = 2
-                        },
-                        new
-                        {
-                            Id = 3,
-                            CurrentStock = 8,
-                            ProductId = 3
-                        });
                 });
 
             modelBuilder.Entity("Library.Data.Entities.Product", b =>
@@ -80,41 +60,15 @@ namespace Library.Data.Migrations
 
                     b.Property<decimal>("Price")
                         .HasPrecision(10, 2)
-                        .HasColumnType("Decimal(10,2)");
+                        .HasColumnType("decimal(10,2)");
 
                     b.Property<string>("Sku")
                         .IsRequired()
-                        .HasColumnType("nvarchar(450)");
+                        .HasColumnType("nvarchar(max)");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("Sku")
-                        .IsUnique();
-
                     b.ToTable("Products");
-
-                    b.HasData(
-                        new
-                        {
-                            Id = 1,
-                            Name = "Clean Code",
-                            Price = 32.00m,
-                            Sku = "BK-001"
-                        },
-                        new
-                        {
-                            Id = 2,
-                            Name = "The Pragmatic Programmer",
-                            Price = 38.00m,
-                            Sku = "BK-002"
-                        },
-                        new
-                        {
-                            Id = 3,
-                            Name = "Refactoring",
-                            Price = 45.00m,
-                            Sku = "BK-003"
-                        });
                 });
 
             modelBuilder.Entity("Library.Data.Entities.InventoryItem", b =>

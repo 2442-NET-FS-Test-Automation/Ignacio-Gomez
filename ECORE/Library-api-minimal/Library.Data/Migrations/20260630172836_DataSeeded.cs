@@ -20,18 +20,6 @@ namespace Library.Data.Migrations
                 oldClrType: typeof(string),
                 oldType: "nvarchar(max)");
 
-            migrationBuilder.AlterColumn<decimal>(
-                name: "Price",
-                table: "Products",
-                type: "Decimal(10,2)",
-                precision: 10,
-                scale: 2,
-                nullable: false,
-                oldClrType: typeof(decimal),
-                oldType: "decimal(10,2)",
-                oldPrecision: 10,
-                oldScale: 2);
-
             migrationBuilder.InsertData(
                 table: "Products",
                 columns: new[] { "Id", "Name", "Price", "Sku" },
@@ -47,7 +35,7 @@ namespace Library.Data.Migrations
                 columns: new[] { "Id", "CurrentStock", "ProductId" },
                 values: new object[,]
                 {
-                    { 1, 4, 1 },
+                    { 1, 5, 1 },
                     { 2, 3, 2 },
                     { 3, 8, 3 }
                 });
@@ -103,18 +91,6 @@ namespace Library.Data.Migrations
                 nullable: false,
                 oldClrType: typeof(string),
                 oldType: "nvarchar(450)");
-
-            migrationBuilder.AlterColumn<decimal>(
-                name: "Price",
-                table: "Products",
-                type: "decimal(10,2)",
-                precision: 10,
-                scale: 2,
-                nullable: false,
-                oldClrType: typeof(decimal),
-                oldType: "Decimal(10,2)",
-                oldPrecision: 10,
-                oldScale: 2);
         }
     }
 }

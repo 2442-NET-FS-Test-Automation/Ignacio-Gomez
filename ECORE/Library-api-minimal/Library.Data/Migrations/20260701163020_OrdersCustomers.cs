@@ -100,7 +100,7 @@ namespace Library.Data.Migrations
                 values: new object[,]
                 {
                     { 1, "ada@example.com", "Ada Lovelace" },
-                    { 2, "alan@example.com", "Alan turing" }
+                    { 2, "alan@example.com", "Alan Turing" }
                 });
 
             migrationBuilder.CreateIndex(

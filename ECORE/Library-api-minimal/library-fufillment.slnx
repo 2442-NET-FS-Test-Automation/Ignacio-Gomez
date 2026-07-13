@@ -1,7 +1,5 @@
 <Solution>
-  <Folder Name="/Library.Api/">
-    <Project Path="Library.Api/Library.API.csproj" />
-  </Folder>
+  <Project Path="Library.Api/Library.Api.csproj" />
   <Project Path="Library.ControllerApi/Library.ControllerApi.csproj" />
   <Project Path="Library.Data/Library.Data.csproj" />
 </Solution>

@@ -12,8 +12,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Library.Data.Migrations
 {
     [DbContext(typeof(LibraryDbContext))]
-    [Migration("20260701164537_AnnotatedCustomer")]
-    partial class AnnotatedCustomer
+    [Migration("20260701163020_OrdersCustomers")]
+    partial class OrdersCustomers
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -24,6 +24,45 @@ namespace Library.Data.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
+
+            modelBuilder.Entity("Library.Data.Entities.Customer", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Email")
+                        .IsUnique();
+
+                    b.ToTable("Customers");
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1,
+                            Email = "ada@example.com",
+                            Name = "Ada Lovelace"
+                        },
+                        new
+                        {
+                            Id = 2,
+                            Email = "alan@example.com",
+                            Name = "Alan Turing"
+                        });
+                });
 
             modelBuilder.Entity("Library.Data.Entities.FulfillmentEvent", b =>
                 {
@@ -79,7 +118,7 @@ namespace Library.Data.Migrations
                         new
                         {
                             Id = 1,
-                            CurrentStock = 4,
+                            CurrentStock = 5,
                             ProductId = 1
                         },
                         new
@@ -96,7 +135,37 @@ namespace Library.Data.Migrations
                         });
                 });
 
-            modelBuilder.Entity("Library.Data.Entities.OrderLines", b =>
+            modelBuilder.Entity("Library.Data.Entities.Order", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("CustomerId")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Priority")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CustomerId");
+
+                    b.ToTable("Orders");
+                });
+
+            modelBuilder.Entity("Library.Data.Entities.OrderLine", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -134,7 +203,7 @@ namespace Library.Data.Migrations
 
                     b.Property<decimal>("Price")
                         .HasPrecision(10, 2)
-                        .HasColumnType("Decimal(10,2)");
+                        .HasColumnType("decimal(10,2)");
 
                     b.Property<string>("Sku")
                         .IsRequired()
@@ -171,76 +240,6 @@ namespace Library.Data.Migrations
                         });
                 });
 
-            modelBuilder.Entity("Library.Date.Entities.Customer", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("Email")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Email")
-                        .IsUnique();
-
-                    b.ToTable("Customers");
-
-                    b.HasData(
-                        new
-                        {
-                            Id = 1,
-                            Email = "ada@example.com",
-                            Name = "Ada Lovelace"
-                        },
-                        new
-                        {
-                            Id = 2,
-                            Email = "alan@example.com",
-                            Name = "Alan turing"
-                        });
-                });
-
-            modelBuilder.Entity("Library.Date.Entities.Order", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime?>("CompletedUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<DateTime>("CreatedUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int>("CustomerId")
-                        .HasColumnType("int");
-
-                    b.Property<int>("Priority")
-                        .HasColumnType("int");
-
-                    b.Property<int>("Status")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CustomerId");
-
-                    b.ToTable("Orders");
-                });
-
             modelBuilder.Entity("Library.Data.Entities.InventoryItem", b =>
                 {
                     b.HasOne("Library.Data.Entities.Product", "Product")
@@ -252,18 +251,9 @@ namespace Library.Data.Migrations
                     b.Navigation("Product");
                 });
 
-            modelBuilder.Entity("Library.Data.Entities.OrderLines", b =>
+            modelBuilder.Entity("Library.Data.Entities.Order", b =>
                 {
-                    b.HasOne("Library.Date.Entities.Order", null)
-                        .WithMany("Lines")
-                        .HasForeignKey("OrderId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("Library.Date.Entities.Order", b =>
-                {
-                    b.HasOne("Library.Date.Entities.Customer", "Customer")
+                    b.HasOne("Library.Data.Entities.Customer", "Customer")
                         .WithMany("Orders")
                         .HasForeignKey("CustomerId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -272,19 +262,28 @@ namespace Library.Data.Migrations
                     b.Navigation("Customer");
                 });
 
-            modelBuilder.Entity("Library.Data.Entities.Product", b =>
+            modelBuilder.Entity("Library.Data.Entities.OrderLine", b =>
                 {
-                    b.Navigation("Inventory");
+                    b.HasOne("Library.Data.Entities.Order", null)
+                        .WithMany("Lines")
+                        .HasForeignKey("OrderId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
-            modelBuilder.Entity("Library.Date.Entities.Customer", b =>
+            modelBuilder.Entity("Library.Data.Entities.Customer", b =>
                 {
                     b.Navigation("Orders");
                 });
 
-            modelBuilder.Entity("Library.Date.Entities.Order", b =>
+            modelBuilder.Entity("Library.Data.Entities.Order", b =>
                 {
                     b.Navigation("Lines");
+                });
+
+            modelBuilder.Entity("Library.Data.Entities.Product", b =>
+                {
+                    b.Navigation("Inventory");
                 });
 #pragma warning restore 612, 618
         }
