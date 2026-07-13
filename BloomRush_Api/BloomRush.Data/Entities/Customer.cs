@@ -4,6 +4,8 @@ using System.ComponentModel.DataAnnotations.Schema;
 namespace BloomRush.Data.Entities;
 
 [Table("Customers")]
+// Customer is the buyer.
+// Seeder creates baseline customers, and Orders point back to one Customer.
 public class Customer
 {
     public int Id { get; set; }

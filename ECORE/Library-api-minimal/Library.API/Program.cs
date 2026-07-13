@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using Library.API.Fulfillment;
 using Library.Date.Entities;
 using System.Diagnostics;
+using Library.Api.Fulfillment;
 
 //This is my API programs.cs
 // No main. We can think of it as 2 sections
@@ -33,6 +34,7 @@ builder.Services.AddDbContextFactory<LibraryDbContext>(options => options.UseSql
 builder.Services.AddScoped<IFulfillmentService, FulfillmentService>();
 builder.Services.AddScoped<ISeeder, Seeder>();
 builder.Services.AddScoped<BurstPlanner>();
+builder.Services.AddScoped<OrderFactory>();
 
 // Swagger stuff added to builder
 builder.Services.AddEndpointsApiExplorer();
@@ -93,6 +95,14 @@ app.MapGet("/peek/tracking",(LibraryDbContext db) =>
     db.ChangeTracker.Clear();
     return states;
 });
+
+app.MapGet("/peek/loading", (LibraryDbContext db) =>
+{
+   Product product = db.Products.First();
+   db.Entry(product).Reference(p => p.Inventory).Load();
+     
+});
+
 
 //Lets manually go out our way to create a conflict
 app.MapGet("/peek/conflict", (IServiceScopeFactory scopes) =>
@@ -256,7 +266,7 @@ app.MapGet("/reports/by-completion", (LibraryDbContext db) =>
 app.MapGet("/report/top-products", (LibraryDbContext db) =>
 {
     var ranked = db.FulfillmentEvents
-        .Where(e => e.Type == "Filfilled")
+        .Where(e => e.Type == "Fulfilled")
         .Join(db.OrderLines, e => e.OrderId, l => l.OrderId, (e, l) => l)
         .GroupBy(l => l.ProductId)
         .Select(g => new {ProductId = g.Key, Units = g.Sum(l => l.Quantity)})
@@ -266,8 +276,49 @@ app.MapGet("/report/top-products", (LibraryDbContext db) =>
         return ranked;
 });
 
+// Binary Search on the sorted
+app.MapGet("/Reports/rank-of/{units:int}",(int units, LibraryDbContext db) =>
+{
+   var unitsDesc = db.FulfillmentEvents
+        .Where(e => e.Type == "Fulfilled")
+        .Join(db.OrderLines, e => e.OrderId, l => l.OrderId, (e, l) => l)
+        .GroupBy(l => l.ProductId)
+        .Select(g => g.Sum(l => l.Quantity))
+        .OrderByDescending(u => u)
+        .ToArray();
+
+    var index = Array.BinarySearch(unitsDesc, units, Comparer<int>.Create((a, b) => b.CompareTo(a)));
+    while (index > 0 && unitsDesc[index - 1] == units)
+    {
+        index--;
+    }
+
+    return new { units, rank = index >= 0 ? index + 1 : -1};
+    // complements or something - we collapse it to -1
+
+});
+app.MapPost("/orders-with-factory", async (OrderRequest req, OrderFactory factory,
+        IDbContextFactory<LibraryDbContext> dbf, CancellationToken ct) =>
+{
+    try
+    {
+      Order newOrder = factory.CreateOrder(req.Kind, req.CustomerId,
+            req.lines.Select(l => (l.Sku, l.Qty)));
+      await using var db = await dbf.CreateDbContextAsync(ct);
+      db.Orders.Add(newOrder);
+      await db.SaveChangesAsync(ct);
+      return Results.Created($"/orders/{newOrder.Id}", new {newOrder.Id});
+    }
+    catch (UnknownSkuException ex)
+    {
+        Log.Warning("Reject order: unknown SKU {Sku}", ex.Sku);
+        return Results.BadRequest(new {error = ex.Message,sku = ex.Sku});
+    }
+});
 //My file always ends with app.Run -  minimal API or Controller API
 app.Run();
 
 Log.CloseAndFlush();
 public record OrderPayLod(int ProductId, int Quantity, int CustomerId);
+public record OrderLineRequest(string Sku, int Qty);
+public record OrderRequest(string Kind, int CustomerId, List<OrderLineRequest> lines);

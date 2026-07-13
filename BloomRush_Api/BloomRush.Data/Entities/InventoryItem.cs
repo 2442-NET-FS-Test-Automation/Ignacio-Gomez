@@ -3,6 +3,8 @@ using System.ComponentModel.DataAnnotations.Schema;
 namespace BloomRush.Data.Entities;
 
 [Table("InventoryItems")]
+// InventoryItem is the stock row for one Product.
+// FulfillmentService subtracts from QuantityOnHand when an order is fulfilled.
 public class InventoryItem
 {
     public int Id {get; set; }
@@ -18,5 +20,6 @@ public class InventoryItem
     public int QuantityOnHand {get; set; }
 
     // Concurrency token used later to prevent overselling.
+    // SQL Server changes this value every time the row is updated.
     public byte[] RowVersion{get; set;} = default!;
 }

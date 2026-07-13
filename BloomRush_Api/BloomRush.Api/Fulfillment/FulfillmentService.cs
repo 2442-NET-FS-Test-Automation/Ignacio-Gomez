@@ -62,15 +62,46 @@ public class FulfillmentService : IFulfillmentService
                 // If a previous attempt lost a RowVersion race, this reloads the new stock.
                 return await TryFulfillOneAttemptAsync(orderId, ct);
             }
+            // Specific custom exception first:
+            // MissingInventoryException carries OrderId/ProductId/quantity data.
+            // We catch it before the general Exception catch below so the log can show
+            // the business details and the order can be safely backordered.
+            catch (MissingInventoryException ex)
+            {
+                Log.Warning(
+                    ex,
+                    "Order {OrderId} backordered because inventory is missing for product {ProductId}. Requested {RequestedQuantity}, available {AvailableQuantity}",
+                    ex.OrderId,
+                    ex.ProductId,
+                    ex.RequestedQuantity,
+                    ex.AvailableQuantity);
+
+                return await MarkBackorderedAfterMissingInventoryAsync(ex, ct);
+            }
             catch (DbUpdateConcurrencyException)
             {
                 // Another request updated an InventoryItem between our read and SaveChanges.
                 // We do not keep using this DbContext because it has stale RowVersion values.
                 // The next loop attempt creates a new DbContext and re-checks stock.
+                Log.Warning(
+                    "Concurrency conflict while fulfilling order {OrderId}. Attempt {Attempt} of {MaxAttempts}",
+                    orderId,
+                    attempt,
+                    MaxConcurrencyAttempts);
+
                 if (attempt == MaxConcurrencyAttempts)
                 {
                     return await MarkBackorderedAfterConcurrencyAsync(orderId, ct);
                 }
+            }
+            // Base exception last:
+            // This proves the specific-before-base pattern.
+            // Unknown failures are not converted into business success; they are logged
+            // and rethrown so the caller/background task can handle them.
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Log.Error(ex, "Unexpected fulfillment failure for order {OrderId}", orderId);
+                throw;
             }
         }
 
@@ -174,7 +205,19 @@ public class FulfillmentService : IFulfillmentService
             var inventory = inventoryItems
                 .FirstOrDefault(item => item.ProductId == line.ProductId);
 
-            if (inventory == null || inventory.QuantityOnHand < line.Quantity)
+            if (inventory == null)
+            {
+                // Custom exception happens here.
+                // This is not just "not enough stock"; it means the database is missing
+                // the inventory row for a product that an order line references.
+                throw new MissingInventoryException(
+                    order.Id,
+                    line.ProductId,
+                    line.Quantity,
+                    availableQuantity: 0);
+            }
+
+            if (inventory.QuantityOnHand < line.Quantity)
             {
                 hasEnoughStock = false;
                 break;
@@ -252,6 +295,46 @@ public class FulfillmentService : IFulfillmentService
         await transaction.CommitAsync(ct);
 
         return FulfillmentResult.Fulfilled;
+    }
+
+    private async Task<FulfillmentResult> MarkBackorderedAfterMissingInventoryAsync(
+        MissingInventoryException ex,
+        CancellationToken ct)
+    {
+        // The failed attempt's transaction was not committed.
+        // This fresh DbContext marks the order Backordered and writes an audit event.
+        await using var db = await _factory.CreateDbContextAsync(ct);
+
+        var order = await db.Orders
+            .Where(order => order.Id == ex.OrderId)
+            .FirstAsync(ct);
+
+        if (order.Status == Status.Fulfilled)
+        {
+            return FulfillmentResult.Fulfilled;
+        }
+
+        if (order.Status != Status.Pending)
+        {
+            return FulfillmentResult.Backordered;
+        }
+
+        var completedAtUtc = DateTime.UtcNow;
+
+        order.Status = Status.Backordered;
+        order.CompletedAtUtc = completedAtUtc;
+
+        db.FulfillmentEvents.Add(new FulfillmentEvent
+        {
+            OrderId = order.Id,
+            Type = FulfillmentEventType.Backordered,
+            Message = $"Order backordered because inventory was missing for ProductId {ex.ProductId}.",
+            TimestampUtc = completedAtUtc
+        });
+
+        await db.SaveChangesAsync(ct);
+
+        return FulfillmentResult.Backordered;
     }
 
     private async Task<FulfillmentResult> MarkBackorderedAfterConcurrencyAsync(

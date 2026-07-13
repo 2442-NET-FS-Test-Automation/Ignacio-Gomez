@@ -1,9 +1,11 @@
 // This class will hold the businees logic/db retry logic for fulfilling transactions
+using Library.Api.Fulfillment;
 using Library.Data;
 using Library.Data.Entities;
 using Library.Date.Entities;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
+using System.Collections.Concurrent;
 
 namespace Library.API.Fulfillment;
 
@@ -14,6 +16,7 @@ public interface IFulfillmentService
 {
     public Task<FulfillmentResult> FulfillOneAsync(int orderId, CancellationToken ct);
     public Task<BurstResult> FulfillBurstAsync(IEnumerable<int> orderIds, CancellationToken ct);
+    public int ResolveProductId(string sku);
 }
 
 // Im going to stick everything about order fulfillment in this life
@@ -30,10 +33,23 @@ public class FulfillmentService : IFulfillmentService
     //If we need a DBcontext
     private readonly IDbContextFactory<LibraryDbContext> _factory;
     private readonly BurstPlanner _planner;
+    private readonly ConcurrentDictionary<string, int> _skuToProductId;
     public FulfillmentService(IDbContextFactory<LibraryDbContext> factory, BurstPlanner planner)
     {
         _factory = factory;
         _planner = planner;
+        
+        using var db = _factory.CreateDbContext();
+        _skuToProductId = new ConcurrentDictionary<string, int>(
+            db.Products.ToDictionary(p => p.Sku, p => p.Id)
+        );
+    }
+
+    public int ResolveProductId(string sku)
+    {
+        try {return _skuToProductId[sku];}
+        catch (KeyNotFoundException){throw new UnknownSkuException(sku);}
+        return _skuToProductId[sku];
     }
 
     //This method is going to handle fulfiment - its gone be a bit long. Which

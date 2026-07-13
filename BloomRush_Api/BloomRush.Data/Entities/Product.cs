@@ -4,6 +4,9 @@ using System.ComponentModel.DataAnnotations.Schema;
 namespace BloomRush.Data.Entities;
 
 [Table("Products")]
+// Product is the catalog item.
+// Seeder creates baseline products, InventoryItem stores stock for them,
+// and OrderLine points to them when an order requests a product.
 public class Product
 {
     public int Id {get; set;}

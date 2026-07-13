@@ -6,6 +6,9 @@ using BloomRush.Data.Enums;
 namespace BloomRush.Data.Entities;
 
 [Table("OrderLines")]
+// OrderLine is one item inside an Order.
+// Example: order 7 wants ProductId 5 with Quantity 1.
+// FulfillmentService reads these lines to know what stock to check/decrement.
 public class OrderLine
 {
     public int Id {get; set; }

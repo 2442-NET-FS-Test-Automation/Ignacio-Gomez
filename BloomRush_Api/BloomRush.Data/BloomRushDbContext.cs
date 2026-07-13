@@ -3,6 +3,9 @@ namespace BloomRush.Data;
 using BloomRush.Data.Entities;
 using Microsoft.EntityFrameworkCore;
 
+// DbContext is the bridge between C# objects and SQL Server tables.
+// Program.cs, Seeder.cs, and FulfillmentService.cs create/use this context
+// whenever they need to query or save data.
 public class BloomRushDbContext : DbContext
 {
     public BloomRushDbContext(DbContextOptions<BloomRushDbContext> options)
@@ -20,6 +23,8 @@ public class BloomRushDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // OnModelCreating configures table rules that are not obvious from the entity classes.
+
         // Customer.Email must be unique to avoid duplicated customers by email.
         modelBuilder.Entity<Customer>()
             .HasIndex(c => c.Email)
@@ -50,5 +55,33 @@ public class BloomRushDbContext : DbContext
         // Non-unique index to search orders by status faster.
         modelBuilder.Entity<Order>()
             .HasIndex(o => o.Status);
+
+        // Baseline catalog and customers are inserted by migrations so every fresh database
+        // starts with known test data.
+        // This uses BloomRushBaselineData from the same Data project.
+        modelBuilder.Entity<Customer>().HasData(
+            BloomRushBaselineData.Customers.Select(customer => new Customer
+            {
+                Id = customer.Id,
+                Name = customer.Name,
+                Email = customer.Email
+            }));
+
+        modelBuilder.Entity<Product>().HasData(
+            BloomRushBaselineData.Products.Select(product => new Product
+            {
+                Id = product.Id,
+                Sku = product.Sku,
+                Name = product.Name,
+                Price = product.Price
+            }));
+
+        modelBuilder.Entity<InventoryItem>().HasData(
+            BloomRushBaselineData.Products.Select(product => new InventoryItem
+            {
+                Id = product.Id,
+                ProductId = product.Id,
+                QuantityOnHand = product.BaselineStock
+            }));
     }
 }
