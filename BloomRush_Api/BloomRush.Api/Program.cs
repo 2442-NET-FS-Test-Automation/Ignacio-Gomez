@@ -42,6 +42,9 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddControllers();
 
+// builder.Services.AddMemoryCache();
+// builder.Services.AddResponseCaching();
+
 var app = builder.Build();
 
 app.UseSwagger();
@@ -391,16 +394,16 @@ app.MapPost("/orders/fulfillment-benchmark", async (
 
     var sequentialMs = sequentialTimer.ElapsedMilliseconds;
     var concurrentMs = concurrentTimer.ElapsedMilliseconds;
-    double? speedup = concurrentMs == 0
-        ? null
-        : Math.Round((double)sequentialMs / concurrentMs, 2);
+    // double? speedup = concurrentMs == 0
+    //     ? null
+    //     : Math.Round((double)sequentialMs / concurrentMs, 2);
 
     return Results.Ok(new
     {
         ordersRequested = n,
         sequentialMs,
         concurrentMs,
-        speedup,
+        //speedup,
         note = "Fair benchmark: baseline is reset before each run. Final database state contains the concurrent run.",
         sequential = new
         {
@@ -623,18 +626,18 @@ app.MapGet("/orders/status", async (BloomRushDbContext db) =>
     return Results.Ok(results);
 });
 
-app.MapGet("/orders/status/min-count/{minCount}", async (BloomRushDbContext db, int minCount) =>
-{
-    var orders = await db.Orders
-        .GroupBy(p => p.Status)
-        .Where(group => group.Count() > minCount)
-        .Select(group => new
-        {
-           status = group.Key.ToString(),
-           count = group.Count()
-        }).ToListAsync();
-    return Results.Ok(orders);
-});
+// app.MapGet("/orders/status/min-count/{minCount}", async (BloomRushDbContext db, int minCount) =>
+// {
+//     var orders = await db.Orders
+//         .GroupBy(p => p.Status)
+//         .Where(group => group.Count() > minCount)
+//         .Select(group => new
+//         {
+//            status = group.Key.ToString(),
+//            count = group.Count()
+//         }).ToListAsync();
+//     return Results.Ok(orders);
+// });
 
 // app.MapGet("/orders/customers/join", async (BloomRushDbContext db) =>
 // {
@@ -682,3 +685,4 @@ app.MapGet("/orders/status/min-count/{minCount}", async (BloomRushDbContext db, 
 // });
 
 app.Run();
+Log.CloseAndFlush();
