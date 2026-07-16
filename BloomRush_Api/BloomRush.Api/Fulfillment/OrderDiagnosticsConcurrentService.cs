@@ -11,16 +11,17 @@ public interface IOrderDiagnosticsConcurrentService
 
 public class OrderDiagnosticsConcurrentService : IOrderDiagnosticsConcurrentService
 {
-    private readonly IDbContextFactory<BloomRushDbContext> _factory;
+    private readonly IServiceScopeFactory _scopes;
 
-    public OrderDiagnosticsConcurrentService(IDbContextFactory<BloomRushDbContext> factory)
+    public OrderDiagnosticsConcurrentService(IServiceScopeFactory scopes)
     {
-        _factory = factory;
+        _scopes = scopes;
     }
 
     public async Task<OrderStockCheckResult?> CheckOneOrderAsync(int id, CancellationToken ct)
     {
-        await using var db = await _factory.CreateDbContextAsync(ct);
+        using var scope = _scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<BloomRushDbContext>();
 
         var order = await db.Orders
             .AsNoTracking()

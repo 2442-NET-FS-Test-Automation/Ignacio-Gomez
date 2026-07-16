@@ -2,6 +2,8 @@ using BloomRush.Data;
 using BloomRush.Data.Entities;
 using BloomRush.Data.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace BloomRush.Api.Seeding;
 
@@ -9,82 +11,72 @@ namespace BloomRush.Api.Seeding;
 // Program.cs does not need to know every detail of Seeder; it only needs these methods.
 public interface ISeeder
 {
-    SeedResult RestoreBaseline();
-    IReadOnlyList<int> SeedOrders(int n);
+    Task<SeedResult> RestoreBaselineAsync(CancellationToken ct);
+    Task<IReadOnlyList<int>> SeedOrdersAsync(int n, CancellationToken ct);
 }
 
 // Seeder owns the test-data logic.
-// Program.cs calls this class from /seed and /orders/seed.
+// Program.cs calls this class from /resetbaseline and /orders/seed.
 // This keeps the endpoints small and moves database setup logic out of Program.cs.
 public class Seeder : ISeeder
 {
-    // These are the product SKUs used when /orders/seed creates sample orders.
-    // The SKUs must match the products in BloomRushBaselineData.
-    private static readonly string[] Skus =
-    [
-        "ROSE-RED-12",
-        "LILY-WHITE-06",
-        "SUNFLOWER-10",
-        "ORCHID-PINK-01",
-        "TULIP-MIX-20"
-    ];
+    private readonly BloomRushDbContext _db;
 
-    private readonly IDbContextFactory<BloomRushDbContext> _factory;
-
-    // ASP.NET creates Seeder and sends in the DbContext factory because Program.cs registered:
+    // ASP.NET creates Seeder and sends in the normal scoped DbContext.
     // builder.Services.AddScoped<ISeeder, Seeder>();
-    public Seeder(IDbContextFactory<BloomRushDbContext> factory)
+    public Seeder(BloomRushDbContext db)
     {
-        _factory = factory;
+        _db = db;
     }
 
-    // Called by POST /seed in Program.cs.
+    // Called by POST /resetbaseline in Program.cs.
     // Goal:
     // 1. Delete old order workflow data.
     // 2. Restore baseline customers/products/inventory.
     // 3. Return counts so the endpoint can show what happened.
-    public SeedResult RestoreBaseline()
+    public async Task<SeedResult> RestoreBaselineAsync(CancellationToken ct)
     {
-        // Create one DbContext for this whole seed/reset operation.
-        // The DbContext is the object EF Core uses to query and save SQL Server data.
-        using var db = _factory.CreateDbContext();
+        // Read the baseline values from BloomRushDbContext.HasData().
+        // This keeps the seed values in one place: the Fluent API.
+        var baselineCustomers = GetBaselineCustomers();
+        var baselineProducts = GetBaselineProducts();
+        var baselineInventory = GetBaselineInventory();
 
         // Count existing workflow rows before deleting them.
         // These numbers are sent back to Program.cs inside SeedResult.
-        var eventsDeleted = db.FulfillmentEvents.Count();
-        var linesDeleted = db.OrderLines.Count();
-        var ordersDeleted = db.Orders.Count();
+        var eventsDeleted = await _db.FulfillmentEvents.CountAsync(ct);
+        var linesDeleted = await _db.OrderLines.CountAsync(ct);
+        var ordersDeleted = await _db.Orders.CountAsync(ct);
 
         // Delete child tables first.
         // FulfillmentEvents and OrderLines point to Orders, so they must go before Orders.
         if (eventsDeleted > 0)
         {
-            db.FulfillmentEvents.RemoveRange(db.FulfillmentEvents.ToList());
+            _db.FulfillmentEvents.RemoveRange(await _db.FulfillmentEvents.ToListAsync(ct));
         }
 
         if (linesDeleted > 0)
         {
-            db.OrderLines.RemoveRange(db.OrderLines.ToList());
+            _db.OrderLines.RemoveRange(await _db.OrderLines.ToListAsync(ct));
         }
 
         if (ordersDeleted > 0)
         {
-            db.Orders.RemoveRange(db.Orders.ToList());
+            _db.Orders.RemoveRange(await _db.Orders.ToListAsync(ct));
         }
 
-        // BloomRushBaselineData lives in the Data project.
-        // Seeder reads that fixed list and makes sure the database has those customers.
-        foreach (var baselineCustomer in BloomRushBaselineData.Customers)
+        // Make sure baseline customers exist and have the expected names.
+        foreach (var baselineCustomer in baselineCustomers)
         {
-            var customer = db.Customers
+            var customer = await _db.Customers
                 .Where(c => c.Email == baselineCustomer.Email)
-                .FirstOrDefault();
+                .FirstOrDefaultAsync(ct);
 
             if (customer == null)
             {
                 // New Customer object is created in memory first.
                 // db.Customers.Add marks it as "insert this row" for the next SaveChanges().
-                db.Customers.Add(new Customer
+                _db.Customers.Add(new Customer
                 {
                     Name = baselineCustomer.Name,
                     Email = baselineCustomer.Email
@@ -99,17 +91,17 @@ public class Seeder : ISeeder
 
         // Same idea for products:
         // find by SKU, create if missing, update if already there.
-        foreach (var baselineProduct in BloomRushBaselineData.Products)
+        foreach (var baselineProduct in baselineProducts)
         {
-            var product = db.Products
+            var product = await _db.Products
                 .Where(p => p.Sku == baselineProduct.Sku)
-                .FirstOrDefault();
+                .FirstOrDefaultAsync(ct);
 
             if (product == null)
             {
                 // New Product object is created here.
                 // SQL Server gets the row only when db.SaveChanges() runs below.
-                db.Products.Add(new Product
+                _db.Products.Add(new Product
                 {
                     Sku = baselineProduct.Sku,
                     Name = baselineProduct.Name,
@@ -126,80 +118,88 @@ public class Seeder : ISeeder
 
         // Save customers and products before inventory.
         // Inventory needs ProductId, so products must exist in the database first.
-        db.SaveChanges();
+        await _db.SaveChangesAsync(ct);
 
         // Inventory belongs to products.
         // This loop finds each product by SKU, then resets or creates its stock row.
-        foreach (var baselineProduct in BloomRushBaselineData.Products)
+        foreach (var baselineInventoryItem in baselineInventory)
         {
-            var productId = db.Products
-                .Where(p => p.Sku == baselineProduct.Sku)
-                .Select(p => p.Id)
+            var productSku = baselineProducts
+                .Where(product => product.Id == baselineInventoryItem.ProductId)
+                .Select(product => product.Sku)
                 .First();
 
-            var inventory = db.InventoryItems
+            var productId = await _db.Products
+                .Where(p => p.Sku == productSku)
+                .Select(p => p.Id)
+                .FirstAsync(ct);
+
+            var inventory = await _db.InventoryItems
                 .Where(i => i.ProductId == productId)
-                .FirstOrDefault();
+                .FirstOrDefaultAsync(ct);
 
             if (inventory == null)
             {
                 // New InventoryItem object links stock to one ProductId.
-                db.InventoryItems.Add(new InventoryItem
+                _db.InventoryItems.Add(new InventoryItem
                 {
                     ProductId = productId,
-                    QuantityOnHand = baselineProduct.BaselineStock
+                    QuantityOnHand = baselineInventoryItem.QuantityOnHand
                 });
             }
             else
             {
                 // Existing inventory row: reset stock back to the baseline amount.
-                inventory.QuantityOnHand = baselineProduct.BaselineStock;
+                inventory.QuantityOnHand = baselineInventoryItem.QuantityOnHand;
             }
         }
 
         // This sends all inventory INSERT/UPDATE statements to SQL Server.
-        db.SaveChanges();
+        await _db.SaveChangesAsync(ct);
 
-        // SeedResult is not a database row.
-        // It is a small response object sent back to Program.cs so /seed can return JSON.
+        // Record call: SeedResult is created here.
+        // It is not a database row; it is only the response data for /resetbaseline.
         return new SeedResult(
             eventsDeleted,
             linesDeleted,
             ordersDeleted,
-            BloomRushBaselineData.Customers.Count,
-            BloomRushBaselineData.Products.Count,
-            BloomRushBaselineData.Products.Count,
-            BloomRushBaselineData.TotalBaselineStock);
+            baselineCustomers.Count,
+            baselineProducts.Count,
+            baselineInventory.Count,
+            baselineInventory.Sum(item => item.QuantityOnHand));
     }
 
     // Called by POST /orders/seed in Program.cs.
     // n decides how many orders to create.
     // Seeded orders use Standard priority to keep the demo focused on fulfillment.
     // This method returns the IDs of the created orders back to Program.cs.
-    public IReadOnlyList<int> SeedOrders(int n)
+    public async Task<IReadOnlyList<int>> SeedOrdersAsync(int n, CancellationToken ct)
     {
         if (n <= 0)
         {
             return [];
         }
 
-        using var db = _factory.CreateDbContext();
-
         // We need customer IDs because each Order must belong to one Customer.
-        // The endpoint should run /seed first so these customers exist.
-        var customerIds = db.Customers
+        // The endpoint should run /resetbaseline first so these customers exist.
+        var customerIds = await _db.Customers
             .OrderBy(customer => customer.Id)
             .Select(customer => customer.Id)
+            .ToListAsync(ct);
+
+        // Use the same product SKUs declared in BloomRushDbContext.HasData().
+        var skus = GetBaselineProducts()
+            .Select(product => product.Sku)
             .ToList();
 
         // Build a dictionary: SKU -> ProductId.
-        var productIdsBySku = db.Products
-            .Where(product => Skus.Contains(product.Sku))
-            .ToDictionary(product => product.Sku, product => product.Id);
+        var productIdsBySku = await _db.Products
+            .Where(product => skus.Contains(product.Sku))
+            .ToDictionaryAsync(product => product.Sku, product => product.Id, ct);
 
         // If baseline data is missing, return an empty list.
-        // Program.cs turns this into a BadRequest telling the user to run /seed first.
-        if (customerIds.Count == 0 || productIdsBySku.Count != Skus.Length)
+        // Program.cs turns this into a BadRequest telling the user to run /resetbaseline first.
+        if (customerIds.Count == 0 || productIdsBySku.Count != skus.Count)
         {
             return [];
         }
@@ -210,7 +210,7 @@ public class Seeder : ISeeder
         for (var i = 0; i < n; i++)
         {
             // Rotate through the baseline SKUs so seeded orders are not all the same product.
-            var sku = Skus[i % Skus.Length];
+            var sku = skus[i % skus.Count];
 
             // New Order object:
             // - CustomerId connects it to Customers.
@@ -236,10 +236,10 @@ public class Seeder : ISeeder
             };
 
             // Add marks the Order and its OrderLine as pending inserts.
-            db.Orders.Add(order);
+            _db.Orders.Add(order);
 
             // SaveChanges inserts the rows and lets SQL Server generate order.Id.
-            db.SaveChanges();
+            await _db.SaveChangesAsync(ct);
 
             // The generated Id is returned to Program.cs, then shown by Swagger.
             ids.Add(order.Id);
@@ -247,10 +247,49 @@ public class Seeder : ISeeder
 
         return ids;
     }
+
+    private IReadOnlyList<(int Id, string Name, string Email)> GetBaselineCustomers()
+    {
+        return GetSeedData<Customer>()
+            .Select(row => (
+                Id: (int)row[nameof(Customer.Id)]!,
+                Name: (string)row[nameof(Customer.Name)]!,
+                Email: (string)row[nameof(Customer.Email)]!))
+            .ToList();
+    }
+
+    private IReadOnlyList<(int Id, string Sku, string Name, decimal Price)> GetBaselineProducts()
+    {
+        return GetSeedData<Product>()
+            .Select(row => (
+                Id: (int)row[nameof(Product.Id)]!,
+                Sku: (string)row[nameof(Product.Sku)]!,
+                Name: (string)row[nameof(Product.Name)]!,
+                Price: (decimal)row[nameof(Product.Price)]!))
+            .ToList();
+    }
+
+    private IReadOnlyList<(int ProductId, int QuantityOnHand)> GetBaselineInventory()
+    {
+        return GetSeedData<InventoryItem>()
+            .Select(row => (
+                ProductId: (int)row[nameof(InventoryItem.ProductId)]!,
+                QuantityOnHand: (int)row[nameof(InventoryItem.QuantityOnHand)]!))
+            .ToList();
+    }
+
+    private IReadOnlyList<IDictionary<string, object?>> GetSeedData<TEntity>()
+    {
+        // HasData is stored in EF Core's design-time model, not in the optimized runtime model.
+        var designTimeModel = _db.GetService<IDesignTimeModel>().Model;
+        var entityType = designTimeModel.FindEntityType(typeof(TEntity));
+
+        return entityType?.GetSeedData().ToList() ?? [];
+    }
 }
 
-// SeedResult is a response model for /seed.
-// It is created by Seeder.RestoreBaseline() and sent back through Program.cs.
+// Record used as the response model for /resetbaseline.
+// It is created by Seeder.RestoreBaselineAsync() and sent back through Program.cs.
 public record SeedResult(
     int EventsDeleted,
     int LinesDeleted,
