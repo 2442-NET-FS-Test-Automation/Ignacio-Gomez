@@ -1,5 +1,6 @@
 namespace BloomRush.Data;
 
+using System.Reflection.Metadata;
 using BloomRush.Data.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -20,10 +21,14 @@ public class BloomRushDbContext : DbContext
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<OrderLine> OrderLines => Set<OrderLine>();
     public DbSet<FulfillmentEvent> FulfillmentEvents => Set<FulfillmentEvent>();
+    public DbSet<User> Users => Set<User>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // OnModelCreating configures table rules that are not obvious from the entity classes.
+        modelBuilder.Entity<User>()
+            .HasIndex(p => p.Username)
+            .IsUnique();
 
         // Customer.Email must be unique to avoid duplicated customers by email.
         modelBuilder.Entity<Customer>()
@@ -56,32 +61,29 @@ public class BloomRushDbContext : DbContext
         modelBuilder.Entity<Order>()
             .HasIndex(o => o.Status);
 
-        // Baseline catalog and customers are inserted by migrations so every fresh database
-        // starts with known test data.
-        // This uses BloomRushBaselineData from the same Data project.
+        // Baseline customers inserted by EF migrations.
+        // These are the fixed customers used by Swagger demos and resetbaseline.
         modelBuilder.Entity<Customer>().HasData(
-            BloomRushBaselineData.Customers.Select(customer => new Customer
-            {
-                Id = customer.Id,
-                Name = customer.Name,
-                Email = customer.Email
-            }));
+            new Customer { Id = 1, Name = "Ana Flores", Email = "ana@bloomrush.test" },
+            new Customer { Id = 2, Name = "Marco Rivera", Email = "marco@bloomrush.test" },
+            new Customer { Id = 3, Name = "Sofia Luna", Email = "sofia@bloomrush.test" });
 
+        // Baseline products inserted by EF migrations.
+        // Product Ids are fixed so InventoryItems can point to them below.
         modelBuilder.Entity<Product>().HasData(
-            BloomRushBaselineData.Products.Select(product => new Product
-            {
-                Id = product.Id,
-                Sku = product.Sku,
-                Name = product.Name,
-                Price = product.Price
-            }));
+            new Product { Id = 1, Sku = "ROSE-RED-12", Name = "Red Roses Bouquet", Price = 49.99m },
+            new Product { Id = 2, Sku = "LILY-WHITE-06", Name = "White Lilies", Price = 39.99m },
+            new Product { Id = 3, Sku = "SUNFLOWER-10", Name = "Sunflower Bundle", Price = 29.99m },
+            new Product { Id = 4, Sku = "ORCHID-PINK-01", Name = "Pink Orchid", Price = 59.99m },
+            new Product { Id = 5, Sku = "TULIP-MIX-20", Name = "Mixed Tulips", Price = 34.99m });
 
+        // Baseline inventory inserted by EF migrations.
+        // QuantityOnHand is the starting stock restored by resetbaseline too.
         modelBuilder.Entity<InventoryItem>().HasData(
-            BloomRushBaselineData.Products.Select(product => new InventoryItem
-            {
-                Id = product.Id,
-                ProductId = product.Id,
-                QuantityOnHand = product.BaselineStock
-            }));
+            new InventoryItem { Id = 1, ProductId = 1, QuantityOnHand = 100 },
+            new InventoryItem { Id = 2, ProductId = 2, QuantityOnHand = 100 },
+            new InventoryItem { Id = 3, ProductId = 3, QuantityOnHand = 100 },
+            new InventoryItem { Id = 4, ProductId = 4, QuantityOnHand = 100 },
+            new InventoryItem { Id = 5, ProductId = 5, QuantityOnHand = 100 });
     }
 }

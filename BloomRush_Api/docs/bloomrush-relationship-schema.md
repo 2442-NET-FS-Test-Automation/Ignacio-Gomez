@@ -15,7 +15,7 @@ flowchart LR
     O -->|"1:N"| OL
     P -->|"1:N"| OL
     P -->|"1:1"| I
-    O -->|"1:N"| FE
+    O -->|"1:1"| FE
 ```
 
 ## Reading the lines
@@ -32,8 +32,8 @@ flowchart LR
 - `Products 1:1 InventoryItems`
   This means one product has one inventory row, and one inventory row belongs to one product.
 
-- `Orders 1:N FulfillmentEvents`
-  This means one order can generate many audit events, and each event belongs to one order.
+- `Orders 1:1 FulfillmentEvents`
+  This means the current fulfillment flow creates one final fulfillment event for one order.
 
 ## Derived many-to-many
 

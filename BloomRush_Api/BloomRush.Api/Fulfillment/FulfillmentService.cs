@@ -82,7 +82,7 @@ public class FulfillmentService : IFulfillmentService
                     .Where(item => productIds.Contains(item.ProductId))
                     .ToListAsync(ct);
 
-                var canFulfill = true;
+                bool canFulfill = true;
 
                 // Check stock first. If one product is missing or too low, the whole order backorders.
                 foreach (var line in order.Lines)
@@ -203,6 +203,7 @@ public class FulfillmentService : IFulfillmentService
         IReadOnlyList<int> orderIds,
         CancellationToken ct)
     {
+        //Here lunch all the task and wait them.
         var tasks = orderIds.Select(async orderId =>
         {
             var result = await FulfillOneAsync(orderId, ct);

@@ -1,11 +1,14 @@
-using System.Diagnostics;
 using BloomRush.Api.Fulfillment;
+using BloomRush.Api.Services;
 using BloomRush.Api.Seeding;
 using BloomRush.Data;
-using BloomRush.Data.Entities;
-using BloomRush.Data.Enums;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using Serilog;
+using System.Text;
+using BloomRush.Api.Middleware;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -28,13 +31,43 @@ builder.Services.AddDbContext<BloomRushDbContext>(options =>
 // Fulfillment uses a DbContext factory because burst/concurrent processing
 // needs fresh DbContext instances that are not shared between tasks.
 builder.Services.AddDbContextFactory<BloomRushDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("BloomRushDb")));
+    options.UseSqlServer(builder.Configuration.GetConnectionString("BloomRushDb")),
+    ServiceLifetime.Scoped);
 
 // Register our own app services.
 // ISeeder is implemented by Seeder in Seeding/Seeder.cs.
 // IFulfillmentService is implemented by FulfillmentService in Fulfillment/FulfillmentService.cs.
+builder.Services.AddControllers();
 builder.Services.AddScoped<ISeeder, Seeder>();
 builder.Services.AddScoped<IFulfillmentService, FulfillmentService>();
+builder.Services.AddScoped<IUserService, UserService>();
+builder.Services.AddScoped<ITokenService, TokenService>();
+
+
+var jwtKey = builder.Configuration["Jwt:Key"]
+    ?? throw new InvalidOperationException("Jwt:Key is missing.");
+var jwtIssuer = builder.Configuration["Jwt:Issuer"]
+    ?? throw new InvalidOperationException("Jwt:Issuer is missing.");
+var jwtAudience = builder.Configuration["Jwt:Audience"]
+    ?? throw new InvalidOperationException("Jwt:Audience is missing.");
+
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = jwtIssuer,
+            ValidAudience = jwtAudience,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
+        };
+    });
+
+builder.Services.AddAuthorization();
 
 
 // Swagger services let us test the endpoints from the browser.
@@ -49,538 +82,21 @@ var app = builder.Build();
 app.UseSwagger();
 app.UseSwaggerUI();
 
+// Enable controllers
+app.UseHttpsRedirection();
+app.UseMiddleware<RequestTimingMiddleware>();
+app.UseAuthentication();
+app.UseAuthorization();
+
+// 4. Map the controller endpoints in the middleware pipeline
+app.MapControllers();
+
 // Graceful shutdown log flushing:
 // When the app stops, Serilog flushes any buffered log events before exit.
 app.Lifetime.ApplicationStopped.Register(() => Log.CloseAndFlush());
 
 app.MapGet("/", () => "BloomRush API ready");
 
-// POST /resetbaseline
-// This endpoint does not create the data directly.
-// It receives ISeeder from dependency injection, then calls Seeder.RestoreBaselineAsync().
-// Seeder returns SeedResult, and Program.cs converts that result into the HTTP response.
-app.MapPost("/resetbaseline", async (ISeeder seeder, CancellationToken ct) =>
-{
-    // RestoreBaselineAsync returns a SeedResult record with the reset summary.
-    var result = await seeder.RestoreBaselineAsync(ct);
-
-    return Results.Ok(new
-    {
-        message = "Baseline restored",
-        eventsDeleted = result.EventsDeleted,
-        linesDeleted = result.LinesDeleted,
-        ordersDeleted = result.OrdersDeleted,
-        baselineCustomers = result.BaselineCustomers,
-        baselineProducts = result.BaselineProducts,
-        baselineInventoryItems = result.BaselineInventoryItems,
-        baselineStock = result.BaselineStock
-    });
-});
-
-// GET /orders
-// Read-only endpoint for seeing every order at a summary level.
-// It creates a DbContext, reads Orders + Customer + Lines, then sends a shaped JSON response.
-app.MapGet("/orders", async (
-    BloomRushDbContext db,
-    CancellationToken ct) =>
-{
-    // AsNoTracking means EF Core reads data but does not prepare it for updates.
-    // Include tells EF Core to also load the related Customer and Lines.
-    var orders = await db.Orders
-        .AsNoTracking()
-        .Include(order => order.Customer)
-        .Include(order => order.Lines)
-        .OrderByDescending(order => order.CreatedAtUtc)
-        .Select(order => new
-        {
-            order.Id,
-            customerId = order.CustomerId,
-            customerName = order.Customer.Name,
-            customerEmail = order.Customer.Email,
-            priority = order.Priority.ToString(),
-            status = order.Status.ToString(),
-            order.CreatedAtUtc,
-            order.CompletedAtUtc,
-            lineCount = order.Lines.Count,
-            totalUnits = order.Lines.Sum(line => line.Quantity)
-        })
-        .ToListAsync(ct);
-
-    return Results.Ok(orders);
-});
-
-// GET /orders/{orderId}
-// Read-only endpoint for inspecting one order.
-// This is the "what does this order contain?" endpoint:
-// Order -> Customer, OrderLines -> Products, and FulfillmentEvents.
-app.MapGet("/orders/{orderId:int}", async (
-    int orderId,
-    BloomRushDbContext db,
-    CancellationToken ct) =>
-{
-    // First query: order header + customer data.
-    var orderHeader = await db.Orders
-        .AsNoTracking()
-        .Where(order => order.Id == orderId)
-        .Select(order => new
-        {
-            order.Id,
-            customerId = order.CustomerId,
-            customerName = order.Customer.Name,
-            customerEmail = order.Customer.Email,
-            priority = order.Priority.ToString(),
-            status = order.Status.ToString(),
-            order.CreatedAtUtc,
-            order.CompletedAtUtc
-        })
-        .FirstOrDefaultAsync(ct);
-
-    if (orderHeader == null)
-    {
-        return Results.NotFound($"Order {orderId} was not found.");
-    }
-
-    // Second query: order lines + product data.
-    var lines = await db.OrderLines
-        .AsNoTracking()
-        .Where(line => line.OrderId == orderId)
-        .OrderBy(line => line.Id)
-        .Select(line => new
-        {
-            line.Id,
-            line.ProductId,
-            sku = line.Product.Sku,
-            productName = line.Product.Name,
-            line.Quantity
-        })
-        .ToListAsync(ct);
-
-    // Third query: fulfillment audit events for this order.
-    var events = await db.FulfillmentEvents
-        .AsNoTracking()
-        .Where(evt => evt.OrderId == orderId)
-        .OrderBy(evt => evt.TimestampUtc)
-        .Select(evt => new
-        {
-            evt.Id,
-            type = evt.Type.ToString(),
-            evt.Message,
-            evt.TimestampUtc
-        })
-        .ToListAsync(ct);
-
-    return Results.Ok(new
-    {
-        orderHeader.Id,
-        orderHeader.customerId,
-        orderHeader.customerName,
-        orderHeader.customerEmail,
-        orderHeader.priority,
-        orderHeader.status,
-        orderHeader.CreatedAtUtc,
-        orderHeader.CompletedAtUtc,
-        lines,
-        events
-    });
-});
-
-// DELETE /orders/{orderId}/cascade
-// Deletes one Order. Because OrderLines and FulfillmentEvents have cascade delete,
-// SQL Server also deletes the child rows that belong to that order.
-app.MapDelete("/orders/{orderId:int}/cascade", async (
-    int orderId,
-    BloomRushDbContext db,
-    CancellationToken ct) =>
-{
-    var order = await db.Orders
-        .Include(order => order.Lines)
-        .Include(order => order.Events)
-        .FirstOrDefaultAsync(order => order.Id == orderId, ct);
-
-    if (order == null)
-    {
-        return Results.NotFound($"Order {orderId} was not found.");
-    }
-
-    var deletedLines = order.Lines.Count;
-    var deletedEvents = order.Events.Count;
-
-    // We only remove the parent order.
-    // The configured cascade delete removes the child OrderLines and FulfillmentEvents.
-    db.Orders.Remove(order);
-    await db.SaveChangesAsync(ct);
-
-    return Results.Ok(new
-    {
-        orderId,
-        deletedLines,
-        deletedEvents,
-        message = "Order deleted with cascade."
-    });
-});
-
-// GET /inventory
-// Read-only endpoint for checking stock.
-// Use this before and after /orders/{id}/fulfill to see QuantityOnHand decrease.
-app.MapGet("/inventory", async (
-    BloomRushDbContext db,
-    CancellationToken ct) =>
-{
-    var inventory = await db.InventoryItems
-        .AsNoTracking()
-        .Include(item => item.Product)
-        .OrderBy(item => item.Product.Sku)
-        .Select(item => new
-        {
-            item.Id,
-            item.ProductId,
-            sku = item.Product.Sku,
-            name = item.Product.Name,
-            item.QuantityOnHand
-        })
-        .ToListAsync(ct);
-
-    return Results.Ok(inventory);
-});
-
-// POST /orders/seed?n=5
-// Program.cs receives the query value n from the URL.
-// It calls Seeder.SeedOrdersAsync(), which creates Order and OrderLine rows.
-// Seeder returns only the new order IDs, then this endpoint sends those IDs to Swagger.
-app.MapPost("/orders/seed", async (int n, ISeeder seeder, CancellationToken ct) =>
-{
-    if (n <= 0)
-    {
-        return Results.BadRequest("n must be greater than zero.");
-    }
-
-    var orderIds = await seeder.SeedOrdersAsync(n, ct);
-
-    if (orderIds.Count == 0)
-    {
-        return Results.BadRequest("Run /resetbaseline first so customers, products, and inventory exist.");
-    }
-
-    return Results.Ok(new
-    {
-        created = orderIds.Count,
-        orderIds = orderIds
-    });
-});
-
-// POST /orders/burst?n=20
-// This creates sample orders, starts background fulfillment, then returns immediately.
-// The endpoint does not wait for fulfillment to finish because Task.Run keeps working
-// after the HTTP request is already done.
-app.MapPost("/orders/burst", async (
-    int n,
-    ISeeder seeder,
-    IServiceScopeFactory scopes,
-    IHostApplicationLifetime lifetime,
-    CancellationToken ct) =>
-{
-    if (n <= 0)
-    {
-        return Results.BadRequest("n must be greater than zero.");
-    }
-
-    var orderIds = await seeder.SeedOrdersAsync(n, ct);
-
-    if (orderIds.Count == 0)
-    {
-        return Results.BadRequest("Run /resetbaseline first so customers, products, and inventory exist.");
-    }
-
-    // This token is canceled when the app is shutting down.
-    // It is better than using the HTTP request token because this work should keep running
-    // after Swagger already got its response.
-    var appStopping = lifetime.ApplicationStopping;
-
-    _ = Task.Run(async () =>
-    {
-        try
-        {
-            // The background task is outside the HTTP request.
-            // CreateScope gives it a fresh dependency-injection scope.
-            using var scope = scopes.CreateScope();
-            var fulfillmentService = scope.ServiceProvider.GetRequiredService<IFulfillmentService>();
-
-            // FulfillBurstAsync fans out over the single-order path.
-            // Each order still goes through FulfillOneAsync, including concurrency retry.
-            await fulfillmentService.FulfillBurstAsync(orderIds, appStopping);
-        }
-        catch (OperationCanceledException) when (appStopping.IsCancellationRequested)
-        {
-            // Graceful stop:
-            // The app is shutting down, so cancellation is expected.
-            // Because each order fulfillment uses one transaction, an order is either
-            // fully saved or rolled back; it should not be left half-applied.
-            Log.Information(
-                "Burst fulfillment stopped because application shutdown was requested. OrderCount: {OrderCount}",
-                orderIds.Count);
-        }
-        catch (Exception ex)
-        {
-            // Fire-and-forget tasks do not return exceptions to the endpoint,
-            // so we must log errors here.
-            Log.Error(ex, "Burst fulfillment failed");
-        }
-    }, appStopping);
-
-    Log.Information(
-        "Burst accepted {OrderCount} orders. OrderIds: {@OrderIds}",
-        orderIds.Count,
-        orderIds);
-
-    return Results.Accepted("/orders", new
-    {
-        message = "Burst accepted. Fulfillment is running in a background task.",
-        created = orderIds.Count,
-        orderIds = orderIds
-    });
-});
-
-// POST /orders/{orderId}/fulfill
-// Program.cs receives the orderId from the URL.
-// It does a small validation check, then calls FulfillmentService.FulfillOneAsync().
-// The service owns the real business logic: check stock, decrement inventory,
-// change order status, and create a FulfillmentEvent.
-app.MapPost("/orders/{orderId:int}/fulfill", async (
-    int orderId,
-    BloomRushDbContext db,
-    IFulfillmentService fulfillmentService,
-    CancellationToken ct) =>
-{
-    // The endpoint checks if the order exists before asking the service to process it.
-    var orderStatus = await db.Orders
-        .Where(order => order.Id == orderId)
-        .Select(order => (Status?)order.Status)
-        .FirstOrDefaultAsync(ct);
-
-    if (orderStatus == null)
-    {
-        return Results.NotFound($"Order {orderId} was not found.");
-    }
-
-    // Fulfillment should only run once. If the order already finished,
-    // return its current state without decrementing inventory again.
-    if (orderStatus != Status.Pending)
-    {
-        return Results.Ok(new
-        {
-            orderId,
-            result = orderStatus.ToString(),
-            message = $"Order {orderId} is already {orderStatus}."
-        });
-    }
-
-    // The service returns only Fulfilled or Backordered.
-    var result = await fulfillmentService.FulfillOneAsync(orderId, ct);
-
-    return Results.Ok(new
-    {
-        orderId,
-        result = result.ToString()
-    });
-});
-
-app.MapPost("/orders/fulfillment-benchmark", async (
-    int n,
-    ISeeder seeder,
-    IFulfillmentService fulfillmentService,
-    CancellationToken ct) =>
-{
-    if (n <= 0)
-    {
-        return Results.BadRequest("n must be greater than zero.");
-    }
-
-    var sequentialOrderIds = await seeder.SeedOrdersAsync(n, ct);
-
-    if (sequentialOrderIds.Count == 0)
-    {
-        return Results.BadRequest("Run /resetbaseline first so customers, products, and inventory exist.");
-    }
-
-    var sequentialTimer = Stopwatch.StartNew();
-    // Returns a list of BurstFulfillmentItemResult records.
-    var sequentialResults = await fulfillmentService.FulfillManySequentialAsync(sequentialOrderIds, ct);
-    sequentialTimer.Stop();
-
-    var concurrentOrderIds = await seeder.SeedOrdersAsync(n, ct);
-
-    if (concurrentOrderIds.Count == 0)
-    {
-        return Results.BadRequest("Run /resetbaseline first so customers, products, and inventory exist.");
-    }
-
-    var concurrentTimer = Stopwatch.StartNew();
-    // Returns a list of BurstFulfillmentItemResult records.
-    var concurrentResults = await fulfillmentService.FulfillManyConcurrentAsync(concurrentOrderIds, ct);
-    concurrentTimer.Stop();
-
-    var sequentialMs = sequentialTimer.ElapsedMilliseconds;
-    var concurrentMs = concurrentTimer.ElapsedMilliseconds;
-    // double? speedup = concurrentMs == 0
-    //     ? null
-    //     : Math.Round((double)sequentialMs / concurrentMs, 2);
-
-    return Results.Ok(new
-    {
-        ordersRequested = n,
-        sequentialMs,
-        concurrentMs,
-        //speedup,
-        note = "This endpoint does not reset baseline. Call POST /resetbaseline before it when you need a clean starting point.",
-        sequential = new
-        {
-            created = sequentialOrderIds.Count,
-            fulfilled = sequentialResults.Count(result => result.Result == FulfillmentResult.Fulfilled),
-            backordered = sequentialResults.Count(result => result.Result == FulfillmentResult.Backordered),
-            orderIds = sequentialOrderIds,
-            sample = sequentialResults.Take(5)
-        },
-        concurrent = new
-        {
-            created = concurrentOrderIds.Count,
-            fulfilled = concurrentResults.Count(result => result.Result == FulfillmentResult.Fulfilled),
-            backordered = concurrentResults.Count(result => result.Result == FulfillmentResult.Backordered),
-            orderIds = concurrentOrderIds,
-            sample = concurrentResults.Take(5)
-        }
-    });
-});
-
-// GET /reports/top-products
-// LINQ report endpoint required by the project.
-// This is not a raw table dump: it groups OrderLines by product and calculates totals.
-app.MapGet("/reports/top-products", async (
-    BloomRushDbContext db,
-    CancellationToken ct) =>
-{
-    // Join connects OrderLines to Products so the report can show SKU/name instead of only ProductId.
-    // GroupBy creates one result row per product.
-    // Sum and Count are the aggregation part of the report.
-    var report = await db.OrderLines
-        .AsNoTracking()
-        .Join(
-            db.Products,
-            line => line.ProductId,
-            product => product.Id,
-            (line, product) => new
-            {
-                line.OrderId,
-                line.Quantity,
-                productId = product.Id,
-                sku = product.Sku,
-                name = product.Name
-            })
-        .GroupBy(row => new { row.productId, row.sku, row.name })
-        .Select(group => new
-        {
-            group.Key.productId,
-            group.Key.sku,
-            group.Key.name,
-            totalQuantity = group.Sum(row => row.Quantity),
-            orderCount = group.Select(row => row.OrderId).Distinct().Count()
-        })
-        .OrderByDescending(row => row.totalQuantity)
-        .ToListAsync(ct);
-
-    var ranked = report
-        .Select((row, index) => new
-        {
-            rank = index + 1,
-            row.productId,
-            row.sku,
-            row.name,
-            row.totalQuantity,
-            row.orderCount
-        })
-        .ToList();
-
-    return Results.Ok(ranked);
-});
-
-// GET /reports/order-status
-// Useful dashboard endpoint: how many orders are Pending, Fulfilled, or Backordered.
-// LINQ part: GroupBy status, Count orders, and Sum total units.
-app.MapGet("/reports/order-status", async (
-    BloomRushDbContext db,
-    CancellationToken ct) =>
-{
-    var report = await db.Orders
-        .AsNoTracking()
-        .GroupBy(order => order.Status)
-        .Select(group => new
-        {
-            status = group.Key.ToString(),
-            orderCount = group.Count(),
-            totalUnits = group
-                .SelectMany(order => order.Lines)
-                .Sum(line => line.Quantity)
-        })
-        .OrderBy(row => row.status)
-        .ToListAsync(ct);
-
-    return Results.Ok(report);
-});
-
-
-app.MapGet("/products/{sku}", async (BloomRushDbContext db, string sku) =>
-{
-    var results = await db.Products
-        .AsNoTracking()
-        .Where(products => products.Sku == sku)
-        .Select(products => new
-        {
-            Id = products.Id,
-            Sku = products.Sku,
-            Name = products.Name,
-            Price = products.Price
-        }).FirstOrDefaultAsync();
-    
-    if (results == null)
-    {
-        return Results.NotFound();
-    }
-    return Results.Ok(results);
-});
-
-app.MapGet("/products/price-over/{minPrice}", async (BloomRushDbContext db, decimal minPrice) =>
-{
-    var productOrder = await db.Products
-        .Where(p => p.Price > minPrice)
-        .OrderByDescending(p => p.Price)
-        .Select(p => new
-        {
-           Id = p.Id,
-           Sku = p.Sku,
-           Name = p.Name,
-           Price = p.Price 
-        }).ToListAsync();
-    
-    if(productOrder.Count() == 0)
-    {
-        return Results.NotFound();
-    }
-    return Results.Ok(productOrder);
-});
-
-app.MapGet("/orders/status", async (BloomRushDbContext db) =>
-{
-    var results = await db.Orders
-        .AsNoTracking()
-        .GroupBy(order => order.Status)
-        .Select(group => new
-        {
-            status = group.Key.ToString(),
-            count = group.Count()
-        })
-        .ToListAsync();
-
-    return Results.Ok(results);
-});
 
 app.Run();
 Log.CloseAndFlush();

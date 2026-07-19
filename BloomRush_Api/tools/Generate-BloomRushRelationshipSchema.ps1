@@ -203,17 +203,19 @@ Draw-Relation @(
     [System.Drawing.Point]::new(760, 1130),
     [System.Drawing.Point]::new(760, $events.Left.Y),
     $events.Left
-) "1:N" "" 575 1025 590 1115
+) "1:1" "" 575 1025 590 1115
 
 $noteRect = New-Object System.Drawing.Rectangle 80, 1200, 2040, 118
 $noteBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(239, 246, 255))
 $notePen = New-Object System.Drawing.Pen ([System.Drawing.Color]::FromArgb(147, 197, 253)), 2
 $graphics.FillRectangle($noteBrush, $noteRect)
 $graphics.DrawRectangle($notePen, $noteRect)
-$legendText = "Relationships: Customers 1:N Orders | Orders 1:N OrderLines | Products 1:N OrderLines | Products 1:1 InventoryItems | Orders 1:N FulfillmentEvents`nDerived relation: Orders N:N Products through OrderLines."
+$legendText = "Relationships: Customers 1:N Orders | Orders 1:N OrderLines | Products 1:N OrderLines | Products 1:1 InventoryItems | Orders 1:1 FulfillmentEvents`nDerived relation: Orders N:N Products through OrderLines."
 $graphics.DrawString($legendText, $legendFont, $textBrush, (New-RectF 95 1210 2010 96), $center)
 
-$bitmap.Save($outputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+$tempOutputPath = "$outputPath.tmp"
+$bitmap.Save($tempOutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+Move-Item -LiteralPath $tempOutputPath -Destination $outputPath -Force
 
 $noteBrush.Dispose()
 $notePen.Dispose()

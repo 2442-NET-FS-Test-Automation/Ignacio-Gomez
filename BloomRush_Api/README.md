@@ -1,62 +1,73 @@
 # BloomRush Order Fulfillment
 
-BloomRush es una API de cumplimiento de ordenes para una tienda de flores. El
-sistema mantiene catalogo, clientes, inventario, ordenes, lineas de orden y
-eventos de auditoria de fulfillment.
+BloomRush is an order fulfillment API for a flower shop. The system manages the product catalog, customers, inventory, orders, order lines, and fulfillment audit events.
 
 ## Domain
 
-El dominio es order fulfillment con inventario limitado.
+The domain is order fulfillment with limited inventory.
 
-Una orden (`Order`) representa el encabezado del pedido: cliente, estado,
-prioridad y timestamps. Las lineas (`OrderLine`) representan los productos
-dentro de la orden.
+An Order represents the order header, including the customer, status, priority, and timestamps. OrderLine entities represent the products included in the order.
 
-Este MVP crea ordenes single-line desde `Seeder.SeedOrders(int n)`: cada orden
-sembrada contiene una sola `OrderLine` con cantidad `1`. El modelo soporta
-multi-line porque `Order.Lines` es una lista y `FulfillmentService` recorre
-todas las lineas; simplemente el seeder del MVP mantiene el caso simple.
+This MVP creates single-line orders through Seeder.SeedOrdersAsync(int n): each seeded order contains a single OrderLine with a quantity of 1. The model supports multi-line orders because Order.Lines is a list and FulfillmentService iterates through all the lines; the MVP seeder simply keeps the use case simple.
 
-## Runbook
+## Recommended Flow
 
-Flujo recomendado en Swagger:
+Flow to test one normal order in Swagger:
 
-1. `POST /seed`
+1. `POST /resetbaseline`
 2. `GET /inventory`
 3. `POST /orders/seed?n=5`
 4. `GET /orders`
 5. `POST /orders/{orderId}/fulfill`
-6. `GET /inventory`
-7. `POST /seed`
-8. `POST /orders/burst?n=50`
-9. `GET /orders`
+6. `GET /orders/{orderId}`
+7. `DELETE /orders/{orderId}/cascade`
+8. `GET /orders`
+9. `GET /inventory`
 10. `GET /reports/order-status`
 11. `GET /reports/top-products`
 
-No overselling check: despues de `POST /orders/burst?n=50`, `GET /inventory`
-debe mostrar `QuantityOnHand >= 0` para todos los productos. Cuando el stock se
-agota, las ordenes siguientes deben quedar `Backordered`.
+Flow to test many orders in the background:
+
+1. `POST /resetbaseline`
+2. `POST /orders/burst?n=50`
+3. Wait a few seconds for the background task to finish.
+4. `GET /orders`
+5. `GET /reports/order-status`
+6. `GET /inventory`
+
+Flow to compare sequential vs concurrent fulfillment:
+
+1. `POST /resetbaseline`
+2. `POST /orders/fulfillment-benchmark?n=20`
+3. Check `sequentialMs`, `concurrentMs`, `fulfilled`, and `backordered`.
+
+Important: `POST /orders/seed`, `POST /orders/burst`, and `POST /orders/fulfillment-benchmark` do not reset the baseline. If you want a clean start, call `POST /resetbaseline` first.
+
+No overselling check: after `POST /orders/burst?n=50`, `GET /inventory`
+should show `QuantityOnHand >= 0` for every product. When stock runs out,
+the following orders should become `Backordered`.
 
 ## Technique To Code Map
 
 | Contract line | Code that proves it |
 | --- | --- |
 | Migration-time seed for catalog and customers | `BloomRush.Data/BloomRushDbContext.cs`, `OnModelCreating`, `HasData(...)` |
-| Shared baseline data | `BloomRush.Data/BloomRushBaselineData.cs` |
-| Reset endpoint restores baseline stock | `BloomRush.Api/Program.cs`, `POST /seed`; `BloomRush.Api/Seeding/Seeder.cs`, `RestoreBaseline()` |
-| Orders are single-line MVP | `BloomRush.Api/Seeding/Seeder.cs`, `SeedOrders(int n)` creates one `OrderLine` per `Order` |
+| Migration-time baseline data | `BloomRush.Data/BloomRushDbContext.cs`, `OnModelCreating`, `HasData(...)` |
+| Reset endpoint restores baseline stock | `BloomRush.Api/Program.cs`, `POST /resetbaseline`; `BloomRush.Api/Seeding/Seeder.cs`, `RestoreBaselineAsync(...)` |
+| Orders are single-line MVP | `BloomRush.Api/Seeding/Seeder.cs`, `SeedOrdersAsync(...)` creates one `OrderLine` per `Order` |
 | LINQ report endpoint with grouping/aggregation | `BloomRush.Api/Program.cs`, `GET /reports/top-products` uses `Join`, `GroupBy`, `Sum`, `Count` |
-| Extra LINQ reports | `GET /reports/order-status`, `GET /reports/inventory-value`, `GET /reports/customers` |
+| Extra LINQ report | `GET /reports/order-status` groups orders by status |
 | Concurrency token on inventory row | `BloomRush.Data/Entities/InventoryItem.cs`, `RowVersion`; `BloomRush.Data/BloomRushDbContext.cs`, `.IsRowVersion()` |
-| One order fulfilled with own DbContext | `BloomRush.Api/Fulfillment/FulfillmentService.cs`, `_factory.CreateDbContextAsync(...)` |
-| One transaction per order | `FulfillmentService.TryFulfillOneAttemptAsync(...)`, `BeginTransactionAsync`, `SaveChangesAsync`, `CommitAsync` |
-| Inventory decrement + order status + audit event land atomically | same transaction in `TryFulfillOneAttemptAsync(...)` updates `InventoryItems`, `Orders`, and inserts `FulfillmentEvents` |
+| One order fulfilled with own DbContext | `BloomRush.Api/Fulfillment/FulfillmentService.cs`, `IDbContextFactory` creates a fresh `BloomRushDbContext` |
+| One transaction per order | `FulfillmentService.FulfillOneAsync(...)`, `BeginTransactionAsync`, `SaveChangesAsync`, `CommitAsync` |
+| Inventory decrement + order status + audit event land atomically | same transaction in `FulfillOneAsync(...)` updates `InventoryItems`, `Orders`, and inserts `FulfillmentEvents` |
+| Cascade delete order endpoint | `DELETE /orders/{orderId}/cascade` removes the Order and cascades to `OrderLines` and `FulfillmentEvents` |
 | Race loser catches concurrency exception | `FulfillmentService.FulfillOneAsync(...)`, `catch (DbUpdateConcurrencyException)` |
-| Race loser reloads and retries bounded | `MaxConcurrencyAttempts = 3`; each retry calls `TryFulfillOneAttemptAsync(...)`, which creates a fresh DbContext |
-| Too many race losses backorder | `MarkBackorderedAfterConcurrencyAsync(...)` |
+| Race loser reloads and retries bounded | `MaxAttempts = 3`; each retry creates a fresh DbContext |
+| Too many race losses backorder | `BackorderOrderAsync(...)` |
 | Burst endpoint returns immediately | `BloomRush.Api/Program.cs`, `POST /orders/burst`, `_ = Task.Run(...)`, then `Results.Accepted(...)` |
-| Burst fans out over single-order path | `FulfillmentService.FulfillBurstAsync(...)` calls `FulfillOneAsync(orderId, ct)` for each order |
-| Structured Serilog stream | `Program.cs` configures `Log.Logger`; `FulfillmentService.FulfillBurstAsync(...)` logs `{OrderId}` and `{Result}` |
+| Burst fans out over single-order path | `FulfillmentService.FulfillBurstAsync(...)` calls `FulfillManyConcurrentAsync(...)`, which calls `FulfillOneAsync(orderId, ct)` for each order |
+| Structured Serilog stream | `Program.cs` configures `Log.Logger`; `FulfillmentService.FulfillManyConcurrentAsync(...)` logs `{OrderId}` and `{Result}` |
 
 ## Fulfillment Flow
 
@@ -66,11 +77,10 @@ Normal single order:
 POST /orders/{orderId}/fulfill
     -> Program.cs validates the order exists and is Pending
     -> IFulfillmentService.FulfillOneAsync(orderId)
-    -> TryFulfillOneAttemptAsync(orderId)
     -> load Order + Lines
     -> load matching InventoryItems
-    -> if stock is missing: Status = Backordered, insert FulfillmentEvent
-    -> if stock exists: decrement QuantityOnHand, Status = Fulfilled, insert FulfillmentEvent
+    -> if stock is missing or too low: Status = Backordered, insert FulfillmentEvent
+    -> if stock is enough: decrement QuantityOnHand, Status = Fulfilled, insert FulfillmentEvent
     -> SaveChangesAsync
     -> CommitAsync
 ```
@@ -79,13 +89,22 @@ Burst:
 
 ```text
 POST /orders/burst?n=50
-    -> Seeder.SeedOrders(50)
+    -> Seeder.SeedOrdersAsync(50)
     -> Task.Run starts background work
     -> endpoint immediately returns 202 Accepted
     -> background scope resolves IFulfillmentService
     -> FulfillBurstAsync(orderIds)
     -> FulfillOneAsync(orderId) per order
 ```
+
+## Records
+
+Records are used as small data shapes. They are not database tables.
+
+| Record | Where it is created | Why |
+| --- | --- | --- |
+| `SeedResult` | `Seeder.RestoreBaselineAsync(...)` calls `new SeedResult(...)` | Returns the `/resetbaseline` summary. |
+| `BurstFulfillmentItemResult` | `FulfillmentService` calls `new BurstFulfillmentItemResult(...)` | Returns each order id with `Fulfilled` or `Backordered`. |
 
 ## Big-O
 
@@ -164,17 +183,17 @@ submission and paste them here.
 Suggested benchmark sequence:
 
 ```text
-POST /seed
+POST /resetbaseline
 POST /orders/burst?n=20
 GET /reports/order-status
 GET /inventory
 
-POST /seed
+POST /resetbaseline
 POST /orders/burst?n=50
 GET /reports/order-status
 GET /inventory
 
-POST /seed
+POST /resetbaseline
 POST /orders/burst?n=100
 GET /reports/order-status
 GET /inventory
@@ -196,10 +215,12 @@ RowVersion retries dominate the work.
 | Endpoint | Status | Why |
 | --- | --- | --- |
 | `GET /` | `200 OK` | Health/readiness message. |
-| `POST /seed` | `200 OK` | Baseline reset completed and returns summary. |
+| `POST /resetbaseline` | `200 OK` | Baseline reset completed and returns summary. |
 | `GET /orders` | `200 OK` | Returns order summary list. |
 | `GET /orders/{orderId}` | `200 OK` | Order found and returned. |
 | `GET /orders/{orderId}` | `404 Not Found` | Order ID does not exist. |
+| `DELETE /orders/{orderId}/cascade` | `200 OK` | Order deleted, and child rows were removed by cascade. |
+| `DELETE /orders/{orderId}/cascade` | `404 Not Found` | Order ID does not exist. |
 | `GET /inventory` | `200 OK` | Returns inventory snapshot. |
 | `POST /orders/seed?n=...` | `200 OK` | Orders were created and IDs are returned. |
 | `POST /orders/seed?n=...` | `400 Bad Request` | `n <= 0` or baseline data is missing. |
@@ -209,7 +230,4 @@ RowVersion retries dominate the work.
 | `POST /orders/{orderId}/fulfill` | `404 Not Found` | Order ID does not exist. |
 | `GET /reports/top-products` | `200 OK` | Returns grouped product report. |
 | `GET /reports/order-status` | `200 OK` | Returns grouped status report. |
-| `GET /reports/inventory-value` | `200 OK` | Returns inventory value report. |
-| `GET /reports/customers` | `200 OK` | Returns customer aggregate report. |
 | Any endpoint | `500 Internal Server Error` | Unhandled infrastructure error, for example SQL Server unavailable. |
-
